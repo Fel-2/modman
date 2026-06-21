@@ -17,8 +17,14 @@ fn tmp(name: &str) -> PathBuf {
 
 fn make_tar(dir: &Path, archive: &Path) {
     let ok = Command::new("tar")
-        .arg("-cf").arg(archive).arg("-C").arg(dir).arg(".")
-        .status().expect("tar").success();
+        .arg("-cf")
+        .arg(archive)
+        .arg("-C")
+        .arg(dir)
+        .arg(".")
+        .status()
+        .expect("tar")
+        .success();
     assert!(ok);
 }
 
@@ -91,7 +97,10 @@ fn fomod_install_selects_option() {
 
     let rec = mgr.finish_fomod(&slug, &sel).unwrap();
     let mod_dir = data_root_mod_dir(&mgr, &rec.slug);
-    assert!(mod_dir.join("Main.esp").is_file(), "required file installed");
+    assert!(
+        mod_dir.join("Main.esp").is_file(),
+        "required file installed"
+    );
     let dds = mod_dir.join("textures/wall.dds");
     assert!(dds.is_file(), "selected option installed");
     assert_eq!(fs::read(&dds).unwrap(), b"2k", "2K variant chosen");

@@ -6,7 +6,7 @@ slint::include_modules!();
 use modeman_core::deploy::LinkMethod;
 use modeman_core::fomod::{FomodConfig, GroupKind, PluginType, Selections};
 use modeman_core::manager::InstallOutcome;
-use modeman_core::{game, FileConflict, Manager};
+use modeman_core::{game, FileConflict, Manager, NexusRef};
 use modeman_nexus::{ModFile, ModInfo, ModList, NexusClient, NxmLink};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
@@ -18,9 +18,17 @@ use std::time::Duration;
 /// Messages from background worker threads to the UI loop.
 enum Bg {
     NexusStatus(String),
-    Downloaded { path: PathBuf, domain: String },
+    Downloaded {
+        path: PathBuf,
+        domain: String,
+        /// Nexus (mod_id, file_id, version) if downloaded from Nexus.
+        nexus: Option<(u64, u64, String)>,
+    },
     BrowseMods(Vec<ModInfo>),
-    BrowseFiles { mod_name: String, files: Vec<ModFile> },
+    BrowseFiles {
+        mod_name: String,
+        files: Vec<ModFile>,
+    },
     BrowseMsg(String),
 }
 
@@ -30,6 +38,9 @@ struct Wizard {
     config: FomodConfig,
     selections: Selections,
     step: usize,
+    src_root: PathBuf,
+    /// Currently focused plugin (group, plugin) for the preview pane.
+    sel: Option<(usize, usize)>,
 }
 
 /// Mutable app state shared across UI callbacks.
@@ -55,8 +66,8 @@ struct App {
 
 impl App {
     fn new(tx: Sender<Bg>) -> Self {
-        let data_root = Manager::default_data_root()
-            .unwrap_or_else(|_| PathBuf::from("./modeman-data"));
+        let data_root =
+            Manager::default_data_root().unwrap_or_else(|_| PathBuf::from("./modeman-data"));
         let api_key = std::fs::read_to_string(data_root.join("nexus-apikey.txt"))
             .unwrap_or_default()
             .trim()
@@ -150,20 +161,33 @@ impl App {
     }
 
     fn check_conflicts(&mut self) {
-        self.conflicts = self.manager.as_ref().map(|m| m.conflicts()).unwrap_or_default();
+        self.conflicts = self
+            .manager
+            .as_ref()
+            .map(|m| m.conflicts())
+            .unwrap_or_default();
         self.conflicts_open = true;
         self.status = format!("{} conflicting file(s).", self.conflicts.len());
     }
 
     /// Begin a FOMOD wizard for a freshly staged install.
-    fn start_wizard(&mut self, slug: String, config: FomodConfig) {
+    fn start_wizard(&mut self, slug: String, config: FomodConfig, src_root: PathBuf) {
         let selections = config.default_selections();
-        self.wizard = Some(Wizard { slug, config, selections, step: 0 });
+        self.wizard = Some(Wizard {
+            slug,
+            config,
+            selections,
+            step: 0,
+            src_root,
+            sel: None,
+        });
     }
 
     /// Apply a wizard checkbox toggle, enforcing the group's cardinality.
     fn fomod_toggle(&mut self, gi: usize, pi: usize, checked: bool) {
-        let Some(w) = self.wizard.as_mut() else { return };
+        let Some(w) = self.wizard.as_mut() else {
+            return;
+        };
         let step = w.step;
         let Some(kind) = w
             .config
@@ -203,6 +227,12 @@ impl App {
         }
     }
 
+    fn fomod_select(&mut self, gi: usize, pi: usize) {
+        if let Some(w) = self.wizard.as_mut() {
+            w.sel = Some((gi, pi));
+        }
+    }
+
     fn fomod_step(&mut self, delta: isize) {
         if let Some(w) = self.wizard.as_mut() {
             let last = w.config.steps.len().saturating_sub(1);
@@ -231,6 +261,21 @@ impl App {
     }
 }
 
+fn human_size(bytes: u64) -> String {
+    const U: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < U.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{v:.1} {}", U[i])
+    }
+}
+
 fn plugin_type_str(k: PluginType) -> &'static str {
     match k {
         PluginType::Required => "required",
@@ -253,8 +298,7 @@ fn group_kind_str(k: GroupKind) -> &'static str {
 
 /// Push current state into the UI.
 fn refresh(ui: &MainWindow, app: &App) {
-    let game_names: Vec<SharedString> =
-        app.games.iter().map(|g| g.spec.name.into()).collect();
+    let game_names: Vec<SharedString> = app.games.iter().map(|g| g.spec.name.into()).collect();
     ui.set_games(ModelRc::new(VecModel::from(game_names)));
     ui.set_active_game(app.current.unwrap_or(0) as i32);
     ui.set_status(app.status.as_str().into());
@@ -333,7 +377,8 @@ fn refresh(ui: &MainWindow, app: &App) {
                                 .and_then(|v| v.get(pi))
                                 .copied()
                                 .unwrap_or(false),
-                            kind: plugin_type_str(p.effective_type(&[], std::path::Path::new(""))).into(),
+                            kind: plugin_type_str(p.effective_type(&[], std::path::Path::new("")))
+                                .into(),
                         })
                         .collect();
                     FomodGroup {
@@ -344,6 +389,23 @@ fn refresh(ui: &MainWindow, app: &App) {
                 })
                 .collect();
             ui.set_fomod_groups(ModelRc::new(VecModel::from(groups)));
+
+            // Preview pane for the focused plugin (image + description).
+            let mut desc = String::new();
+            let mut image = slint::Image::default();
+            if let Some((gi, pi)) = w.sel {
+                if let Some(p) = step.groups.get(gi).and_then(|g| g.plugins.get(pi)) {
+                    desc = p.description.clone();
+                    if let Some(rel) = &p.image {
+                        let path = w.src_root.join(rel.replace('\\', "/"));
+                        if let Ok(img) = slint::Image::load_from_path(&path) {
+                            image = img;
+                        }
+                    }
+                }
+            }
+            ui.set_fomod_desc(desc.as_str().into());
+            ui.set_fomod_image(image);
         }
     } else {
         ui.set_fomod_active(false);
@@ -367,16 +429,16 @@ fn refresh(ui: &MainWindow, app: &App) {
             .order
             .iter()
             .map(|e| {
-                let name = mgr
-                    .mods()
-                    .iter()
-                    .find(|m| m.slug == e.slug)
+                let rec = mgr.mods().iter().find(|m| m.slug == e.slug);
+                let name = rec
                     .map(|m| m.name.clone())
                     .unwrap_or_else(|| e.slug.clone());
+                let size = rec.map(|m| human_size(m.size_bytes)).unwrap_or_default();
                 ModRow {
                     slug: e.slug.as_str().into(),
                     name: name.into(),
                     enabled: e.enabled,
+                    size: size.into(),
                 }
             })
             .collect();
@@ -446,19 +508,53 @@ fn spawn_nxm_download(tx: Sender<Bg>, key: String, cache: PathBuf, link_str: Str
                 let pct = total
                     .map(|t| format!(" ({}%)", done * 100 / t.max(1)))
                     .unwrap_or_default();
-                let _ = tx2.send(Bg::NexusStatus(format!(
-                    "Downloading {filename}{pct}…"
-                )));
+                let _ = tx2.send(Bg::NexusStatus(format!("Downloading {filename}{pct}…")));
             }
         });
         match result {
             Ok(_) => {
-                let _ = tx.send(Bg::Downloaded { path: dest, domain: link.domain });
+                let _ = tx.send(Bg::Downloaded {
+                    path: dest,
+                    domain: link.domain,
+                    nexus: Some((link.mod_id, link.file_id, String::new())),
+                });
             }
             Err(e) => {
                 let _ = tx.send(Bg::NexusStatus(format!("Download failed: {e}")));
             }
         }
+    });
+}
+
+/// Worker: check installed Nexus mods for newer files.
+fn spawn_update_check(tx: Sender<Bg>, key: String, mods: Vec<(String, NexusRef)>) {
+    std::thread::spawn(move || {
+        let client = match NexusClient::new(key) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(Bg::NexusStatus(format!("{e}")));
+                return;
+            }
+        };
+        let mut outdated = Vec::new();
+        for (slug, nx) in &mods {
+            if let Ok(files) = client.files(&nx.domain, nx.mod_id) {
+                let latest = files.iter().map(|f| f.file_id).max().unwrap_or(0);
+                if latest > nx.file_id {
+                    outdated.push(slug.clone());
+                }
+            }
+        }
+        let msg = if outdated.is_empty() {
+            format!("All {} Nexus mod(s) up to date.", mods.len())
+        } else {
+            format!(
+                "{} update(s) available: {}",
+                outdated.len(),
+                outdated.join(", ")
+            )
+        };
+        let _ = tx.send(Bg::NexusStatus(msg));
     });
 }
 
@@ -487,10 +583,16 @@ fn spawn_browse_files(tx: Sender<Bg>, key: String, domain: String, mod_id: u64) 
                 return;
             }
         };
-        let name = client.mod_info(&domain, mod_id).map(|m| m.name).unwrap_or_default();
+        let name = client
+            .mod_info(&domain, mod_id)
+            .map(|m| m.name)
+            .unwrap_or_default();
         match client.files(&domain, mod_id) {
             Ok(files) => {
-                let _ = tx.send(Bg::BrowseFiles { mod_name: name, files });
+                let _ = tx.send(Bg::BrowseFiles {
+                    mod_name: name,
+                    files,
+                });
             }
             Err(e) => {
                 let _ = tx.send(Bg::BrowseMsg(format!("Files failed: {e}")));
@@ -520,7 +622,8 @@ fn spawn_browse_download(
             Ok(mut links) if !links.is_empty() => links.remove(0),
             Ok(_) => {
                 let _ = tx.send(Bg::BrowseMsg(
-                    "No links — free accounts must use the site's Mod Manager Download button.".into(),
+                    "No links — free accounts must use the site's Mod Manager Download button."
+                        .into(),
                 ));
                 return;
             }
@@ -537,7 +640,11 @@ fn spawn_browse_download(
         let _ = tx.send(Bg::BrowseMsg(format!("Downloading {filename}…")));
         match client.download_to(&dl.uri, &dest, |_, _| {}) {
             Ok(_) => {
-                let _ = tx.send(Bg::Downloaded { path: dest, domain });
+                let _ = tx.send(Bg::Downloaded {
+                    path: dest,
+                    domain,
+                    nexus: Some((mod_id, file_id, String::new())),
+                });
                 let _ = tx.send(Bg::BrowseMsg("Downloaded — installing…".into()));
             }
             Err(e) => {
@@ -562,20 +669,41 @@ fn handle_bg(app: &Rc<RefCell<App>>, msg: Bg) {
     let mut a = app.borrow_mut();
     match msg {
         Bg::NexusStatus(s) => a.nexus_status = s,
-        Bg::Downloaded { path, domain } => {
+        Bg::Downloaded {
+            path,
+            domain,
+            nexus,
+        } => {
             if !a.open_game_by_domain(&domain) {
-                a.nexus_status =
-                    format!("Downloaded, but '{domain}' is not installed/detected.");
+                a.nexus_status = format!("Downloaded, but '{domain}' is not installed/detected.");
                 return;
             }
             let outcome = a.manager.as_mut().map(|mgr| mgr.install_archive(&path));
             match outcome {
                 Some(Ok(InstallOutcome::Installed(rec))) => {
-                    a.nexus_status = format!("Installed '{}' from Nexus.", rec.name)
+                    if let (Some((mod_id, file_id, version)), Some(mgr)) =
+                        (nexus, a.manager.as_mut())
+                    {
+                        let _ = mgr.set_nexus_ref(
+                            &rec.slug,
+                            NexusRef {
+                                domain: domain.clone(),
+                                mod_id,
+                                file_id,
+                                version,
+                            },
+                        );
+                    }
+                    a.nexus_status = format!("Installed '{}' from Nexus.", rec.name);
                 }
-                Some(Ok(InstallOutcome::NeedsFomod { slug, name, config })) => {
+                Some(Ok(InstallOutcome::NeedsFomod {
+                    slug,
+                    name,
+                    config,
+                    src_root,
+                })) => {
                     a.nexus_status = format!("Configure '{name}' (FOMOD).");
-                    a.start_wizard(slug, *config);
+                    a.start_wizard(slug, *config, src_root);
                 }
                 Some(Err(e)) => a.nexus_status = format!("Install failed: {e}"),
                 None => {}
@@ -595,8 +723,7 @@ fn handle_bg(app: &Rc<RefCell<App>>, msg: Bg) {
 fn main() -> Result<(), slint::PlatformError> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -632,17 +759,21 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let app = app.clone();
         let weak = ui.as_weak();
-        timer.start(slint::TimerMode::Repeated, Duration::from_millis(200), move || {
-            let Some(ui) = weak.upgrade() else { return };
-            let mut got = false;
-            while let Ok(msg) = rx.try_recv() {
-                handle_bg(&app, msg);
-                got = true;
-            }
-            if got {
-                refresh(&ui, &app.borrow());
-            }
-        });
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(200),
+            move || {
+                let Some(ui) = weak.upgrade() else { return };
+                let mut got = false;
+                while let Ok(msg) = rx.try_recv() {
+                    handle_bg(&app, msg);
+                    got = true;
+                }
+                if got {
+                    refresh(&ui, &app.borrow());
+                }
+            },
+        );
     }
 
     // Helper to run a mutation then refresh.
@@ -661,14 +792,20 @@ fn main() -> Result<(), slint::PlatformError> {
         }};
     }
 
-    on!(on_rescan, |a| { a.rescan(); });
+    on!(on_rescan, |a| {
+        a.rescan();
+    });
 
     on!(on_select_game, |a, idx: i32| {
         a.open_game(idx.max(0) as usize);
     });
 
     on!(on_select_profile, |a, idx: i32| {
-        let names = a.manager.as_ref().map(|m| m.profile_names()).unwrap_or_default();
+        let names = a
+            .manager
+            .as_ref()
+            .map(|m| m.profile_names())
+            .unwrap_or_default();
         if let (Some(name), Some(mgr)) = (names.get(idx.max(0) as usize), a.manager.as_mut()) {
             if let Err(e) = mgr.set_active_profile(name) {
                 a.status = format!("{e}");
@@ -678,9 +815,14 @@ fn main() -> Result<(), slint::PlatformError> {
 
     on!(on_new_profile, |a, name: SharedString| {
         let name = name.trim().to_string();
-        if name.is_empty() { return; }
+        if name.is_empty() {
+            return;
+        }
         if let Some(mgr) = a.manager.as_mut() {
-            match mgr.create_profile(&name).and_then(|_| mgr.set_active_profile(&name)) {
+            match mgr
+                .create_profile(&name)
+                .and_then(|_| mgr.set_active_profile(&name))
+            {
                 Ok(_) => a.status = format!("Created profile '{name}'."),
                 Err(e) => a.status = format!("{e}"),
             }
@@ -689,27 +831,41 @@ fn main() -> Result<(), slint::PlatformError> {
 
     on!(on_install, |a| {
         let picked = rfd::FileDialog::new()
-            .add_filter("Mod archives", &["zip", "7z", "rar", "tar", "gz", "bz2", "xz", "zst"])
+            .add_filter(
+                "Mod archives",
+                &["zip", "7z", "rar", "tar", "gz", "bz2", "xz", "zst"],
+            )
             .set_title("Select mod archive")
             .pick_file();
-        let Some(path) = picked else { return; };
+        let Some(path) = picked else {
+            return;
+        };
         let outcome = match a.manager.as_mut() {
             Some(mgr) => mgr.install_archive(&path),
             None => return,
         };
         match outcome {
             Ok(InstallOutcome::Installed(rec)) => a.status = format!("Installed '{}'.", rec.name),
-            Ok(InstallOutcome::NeedsFomod { slug, name, config }) => {
+            Ok(InstallOutcome::NeedsFomod {
+                slug,
+                name,
+                config,
+                src_root,
+            }) => {
                 a.status = format!("Configure '{name}' (FOMOD).");
-                a.start_wizard(slug, *config);
+                a.start_wizard(slug, *config, src_root);
             }
             Err(e) => a.status = format!("Install failed: {e}"),
         }
     });
 
     on!(on_remove, |a, idx: i32| {
-        let slug = a.manager.as_ref()
-            .and_then(|m| m.active_profile().order.get(idx.max(0) as usize).map(|e| e.slug.clone()));
+        let slug = a.manager.as_ref().and_then(|m| {
+            m.active_profile()
+                .order
+                .get(idx.max(0) as usize)
+                .map(|e| e.slug.clone())
+        });
         if let (Some(slug), Some(mgr)) = (slug, a.manager.as_mut()) {
             match mgr.remove_mod(&slug) {
                 Ok(_) => a.status = format!("Removed '{slug}'."),
@@ -719,8 +875,12 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     on!(on_toggle, |a, idx: i32, checked: bool| {
-        let slug = a.manager.as_ref()
-            .and_then(|m| m.active_profile().order.get(idx.max(0) as usize).map(|e| e.slug.clone()));
+        let slug = a.manager.as_ref().and_then(|m| {
+            m.active_profile()
+                .order
+                .get(idx.max(0) as usize)
+                .map(|e| e.slug.clone())
+        });
         if let (Some(slug), Some(mgr)) = (slug, a.manager.as_mut()) {
             if let Err(e) = mgr.set_enabled(&slug, checked) {
                 a.status = format!("{e}");
@@ -731,7 +891,9 @@ fn main() -> Result<(), slint::PlatformError> {
     on!(on_move_up, |a, idx: i32| {
         let i = idx.max(0) as usize;
         if let Some(mgr) = a.manager.as_mut() {
-            if i > 0 { let _ = mgr.move_mod(i, i - 1); }
+            if i > 0 {
+                let _ = mgr.move_mod(i, i - 1);
+            }
         }
     });
 
@@ -761,17 +923,30 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     on!(on_set_deploy_method, |a, idx: i32| {
-        let method = if idx == 1 { LinkMethod::Hardlink } else { LinkMethod::Symlink };
+        let method = if idx == 1 {
+            LinkMethod::Hardlink
+        } else {
+            LinkMethod::Symlink
+        };
         if let Some(mgr) = a.manager.as_mut() {
             match mgr.set_deploy_method(method) {
-                Ok(_) => a.status = format!("Deploy method: {}", if idx == 1 { "hardlink" } else { "symlink" }),
+                Ok(_) => {
+                    a.status = format!(
+                        "Deploy method: {}",
+                        if idx == 1 { "hardlink" } else { "symlink" }
+                    )
+                }
                 Err(e) => a.status = format!("Could not change method: {e}"),
             }
         }
     });
 
-    on!(on_check_conflicts, |a| { a.check_conflicts(); });
-    on!(on_close_conflicts, |a| { a.conflicts_open = false; });
+    on!(on_check_conflicts, |a| {
+        a.check_conflicts();
+    });
+    on!(on_close_conflicts, |a| {
+        a.conflicts_open = false;
+    });
 
     on!(on_browse_open_cb, |a| {
         a.browse_open = true;
@@ -785,7 +960,28 @@ fn main() -> Result<(), slint::PlatformError> {
             (_, true) => a.browse_status = "Set a Nexus API key first.".into(),
         }
     });
-    on!(on_browse_close, |a| { a.browse_open = false; });
+    on!(on_check_updates, |a| {
+        match (a.nexus_domain().is_some(), a.api_key.is_empty()) {
+            (_, true) => a.nexus_status = "Set a Nexus API key first.".into(),
+            _ => {
+                let mods = a
+                    .manager
+                    .as_ref()
+                    .map(|m| m.nexus_mods())
+                    .unwrap_or_default();
+                if mods.is_empty() {
+                    a.nexus_status = "No Nexus-sourced mods to check.".into();
+                } else {
+                    a.nexus_status = "Checking for updates…".into();
+                    spawn_update_check(a.tx.clone(), a.api_key.clone(), mods);
+                }
+            }
+        }
+    });
+
+    on!(on_browse_close, |a| {
+        a.browse_open = false;
+    });
     on!(on_browse_list, |a, kind: i32| {
         if let (Some(domain), false) = (a.nexus_domain(), a.api_key.is_empty()) {
             let k = match kind {
@@ -809,7 +1005,14 @@ fn main() -> Result<(), slint::PlatformError> {
             (Some(domain), Some(mod_id), false) => {
                 let cache = a.cache_dir();
                 a.browse_status = "Resolving download…".into();
-                spawn_browse_download(a.tx.clone(), a.api_key.clone(), cache, domain, mod_id, file_id as u64);
+                spawn_browse_download(
+                    a.tx.clone(),
+                    a.api_key.clone(),
+                    cache,
+                    domain,
+                    mod_id,
+                    file_id as u64,
+                );
             }
             _ => a.browse_status = "Pick a mod first (and set API key).".into(),
         }
@@ -818,10 +1021,21 @@ fn main() -> Result<(), slint::PlatformError> {
     on!(on_fomod_toggle, |a, gi: i32, pi: i32, checked: bool| {
         a.fomod_toggle(gi.max(0) as usize, pi.max(0) as usize, checked);
     });
-    on!(on_fomod_next, |a| { a.fomod_step(1); });
-    on!(on_fomod_back, |a| { a.fomod_step(-1); });
-    on!(on_fomod_install, |a| { a.fomod_install(); });
-    on!(on_fomod_cancel, |a| { a.fomod_cancel(); });
+    on!(on_fomod_select, |a, gi: i32, pi: i32| {
+        a.fomod_select(gi.max(0) as usize, pi.max(0) as usize);
+    });
+    on!(on_fomod_next, |a| {
+        a.fomod_step(1);
+    });
+    on!(on_fomod_back, |a| {
+        a.fomod_step(-1);
+    });
+    on!(on_fomod_install, |a| {
+        a.fomod_install();
+    });
+    on!(on_fomod_cancel, |a| {
+        a.fomod_cancel();
+    });
 
     on!(on_save_key, |a, key: SharedString| {
         a.save_key(&key);
@@ -835,7 +1049,9 @@ fn main() -> Result<(), slint::PlatformError> {
 
     on!(on_nxm_install, |a, link: SharedString| {
         let link = link.trim().to_string();
-        if link.is_empty() { return; }
+        if link.is_empty() {
+            return;
+        }
         if a.api_key.is_empty() {
             a.nexus_status = "Set a Nexus API key first.".into();
             return;

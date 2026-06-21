@@ -6,6 +6,16 @@ use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Reference back to a mod's Nexus origin, for update checks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NexusRef {
+    pub domain: String,
+    pub mod_id: u64,
+    pub file_id: u64,
+    #[serde(default)]
+    pub version: String,
+}
+
 /// A mod installed into the store (extracted, not yet necessarily deployed).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModRecord {
@@ -16,6 +26,12 @@ pub struct ModRecord {
     /// Origin (archive filename, or "nexus:<id>" once integrated).
     #[serde(default)]
     pub source: Option<String>,
+    /// Total size of the installed files, bytes.
+    #[serde(default)]
+    pub size_bytes: u64,
+    /// Nexus origin metadata, when installed from Nexus.
+    #[serde(default)]
+    pub nexus: Option<NexusRef>,
 }
 
 impl ModRecord {
@@ -23,6 +39,17 @@ impl ModRecord {
     pub fn dir(&self, game_store: &Path) -> PathBuf {
         game_store.join("mods").join(&self.slug)
     }
+}
+
+/// Sum the size of all files under a directory.
+pub fn dir_size(dir: &Path) -> u64 {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
 }
 
 /// Turn an arbitrary name into a filesystem-safe slug.

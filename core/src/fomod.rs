@@ -108,9 +108,15 @@ pub struct Composite {
 
 #[derive(Debug, Clone)]
 pub enum Dependency {
-    Flag { name: String, value: String },
+    Flag {
+        name: String,
+        value: String,
+    },
     /// File state dependency: `Active` / `Inactive` / `Missing`.
-    File { file: String, state: String },
+    File {
+        file: String,
+        state: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -180,14 +186,25 @@ pub fn parse(config_path: &Path) -> Result<FomodConfig> {
             for pat in children(&patterns, "pattern") {
                 let deps = child(&pat, "dependencies")
                     .map(|d| parse_composite(&d))
-                    .unwrap_or(Composite { or: false, deps: vec![], nested: vec![] });
-                let files = child(&pat, "files").map(|f| parse_files(&f)).unwrap_or_default();
+                    .unwrap_or(Composite {
+                        or: false,
+                        deps: vec![],
+                        nested: vec![],
+                    });
+                let files = child(&pat, "files")
+                    .map(|f| parse_files(&f))
+                    .unwrap_or_default();
                 conditional.push(ConditionalInstall { deps, files });
             }
         }
     }
 
-    Ok(FomodConfig { module_name, required, steps, conditional })
+    Ok(FomodConfig {
+        module_name,
+        required,
+        steps,
+        conditional,
+    })
 }
 
 fn parse_step(step: &Node) -> InstallStep {
@@ -199,7 +216,11 @@ fn parse_step(step: &Node) -> InstallStep {
             groups.push(parse_group(&grp));
         }
     }
-    InstallStep { name, visible, groups }
+    InstallStep {
+        name,
+        visible,
+        groups,
+    }
 }
 
 fn parse_group(grp: &Node) -> Group {
@@ -217,7 +238,11 @@ fn parse_group(grp: &Node) -> Group {
             plugins.push(parse_plugin(&p));
         }
     }
-    Group { name, kind, plugins }
+    Group {
+        name,
+        kind,
+        plugins,
+    }
 }
 
 fn parse_plugin(p: &Node) -> Plugin {
@@ -227,8 +252,12 @@ fn parse_plugin(p: &Node) -> Plugin {
         .unwrap_or("")
         .trim()
         .to_string();
-    let image = child(p, "image").and_then(|i| i.attribute("path")).map(String::from);
-    let files = child(p, "files").map(|f| parse_files(&f)).unwrap_or_default();
+    let image = child(p, "image")
+        .and_then(|i| i.attribute("path"))
+        .map(String::from);
+    let files = child(p, "files")
+        .map(|f| parse_files(&f))
+        .unwrap_or_default();
 
     let mut flags = Vec::new();
     if let Some(cf) = child(p, "conditionFlags") {
@@ -240,7 +269,15 @@ fn parse_plugin(p: &Node) -> Plugin {
     }
 
     let (default_type, type_patterns) = parse_plugin_type(p);
-    Plugin { name, description, image, files, flags, default_type, type_patterns }
+    Plugin {
+        name,
+        description,
+        image,
+        files,
+        flags,
+        default_type,
+        type_patterns,
+    }
 }
 
 fn type_from_name(name: &str) -> PluginType {
@@ -260,7 +297,10 @@ fn parse_plugin_type(p: &Node) -> (PluginType, Vec<(Composite, PluginType)>) {
         return (PluginType::Optional, Vec::new());
     };
     if let Some(t) = child(&td, "type") {
-        return (type_from_name(t.attribute("name").unwrap_or("Optional")), Vec::new());
+        return (
+            type_from_name(t.attribute("name").unwrap_or("Optional")),
+            Vec::new(),
+        );
     }
     let Some(dt) = child(&td, "dependencyType") else {
         return (PluginType::Optional, Vec::new());
@@ -275,9 +315,15 @@ fn parse_plugin_type(p: &Node) -> (PluginType, Vec<(Composite, PluginType)>) {
         for pat in children(&ps, "pattern") {
             let deps = child(&pat, "dependencies")
                 .map(|d| parse_composite(&d))
-                .unwrap_or(Composite { or: false, deps: vec![], nested: vec![] });
+                .unwrap_or(Composite {
+                    or: false,
+                    deps: vec![],
+                    nested: vec![],
+                });
             let ty = type_from_name(
-                child(&pat, "type").and_then(|t| t.attribute("name")).unwrap_or("Optional"),
+                child(&pat, "type")
+                    .and_then(|t| t.attribute("name"))
+                    .unwrap_or("Optional"),
             );
             patterns.push((deps, ty));
         }
@@ -299,13 +345,21 @@ fn parse_files(node: &Node) -> Vec<FileItem> {
             .attribute("priority")
             .and_then(|p| p.parse().ok())
             .unwrap_or(0);
-        out.push(FileItem { source, destination, is_folder, priority });
+        out.push(FileItem {
+            source,
+            destination,
+            is_folder,
+            priority,
+        });
     }
     out
 }
 
 fn parse_composite(node: &Node) -> Composite {
-    let or = node.attribute("operator").map(|o| o.eq_ignore_ascii_case("or")).unwrap_or(false);
+    let or = node
+        .attribute("operator")
+        .map(|o| o.eq_ignore_ascii_case("or"))
+        .unwrap_or(false);
     let mut deps = Vec::new();
     let mut nested = Vec::new();
     for c in node.children().filter(|c| c.is_element()) {
@@ -357,12 +411,10 @@ impl FomodConfig {
                             .collect();
                         match g.kind {
                             GroupKind::All => sel.iter_mut().for_each(|s| *s = true),
-                            GroupKind::ExactlyOne | GroupKind::AtLeastOne => {
-                                if !sel.iter().any(|s| *s) {
-                                    if let Some(first) = sel.first_mut() {
-                                        *first = true;
-                                    }
-                                }
+                            GroupKind::ExactlyOne | GroupKind::AtLeastOne
+                                if !sel.is_empty() && !sel.iter().any(|s| *s) =>
+                            {
+                                sel[0] = true;
                             }
                             _ => {}
                         }
@@ -409,7 +461,10 @@ pub struct FomodSession {
 
 impl FomodSession {
     pub fn load(config_path: &Path, src_root: PathBuf) -> Result<Self> {
-        Ok(FomodSession { config: parse(config_path)?, src_root })
+        Ok(FomodSession {
+            config: parse(config_path)?,
+            src_root,
+        })
     }
 
     /// Run the install with the given selections, writing into `dest`.
@@ -530,7 +585,10 @@ fn eval(c: &Composite, flags: &[(String, String)], dest: &Path) -> bool {
 /// component case-insensitively against real entries on disk.
 fn resolve_ci(root: &Path, rel: &str) -> Option<PathBuf> {
     let mut cur = root.to_path_buf();
-    for comp in rel.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".") {
+    for comp in rel
+        .split(['/', '\\'])
+        .filter(|c| !c.is_empty() && *c != ".")
+    {
         let mut next = None;
         if let Ok(rd) = std::fs::read_dir(&cur) {
             for e in rd.flatten() {
@@ -567,7 +625,8 @@ fn copy_file(src: &Path, dst: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn child<'a>(node: &Node<'a, 'a>, tag: &str) -> Option<Node<'a, 'a>> {
-    node.children().find(|c| c.is_element() && c.tag_name().name() == tag)
+    node.children()
+        .find(|c| c.is_element() && c.tag_name().name() == tag)
 }
 
 fn children<'a>(node: &'a Node<'a, 'a>, tag: &'a str) -> impl Iterator<Item = Node<'a, 'a>> {

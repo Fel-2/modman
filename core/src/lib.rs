@@ -15,9 +15,9 @@ pub mod paradoxdb;
 pub mod plugins;
 pub mod profile;
 pub mod redmod;
-pub mod vfs;
 pub mod store;
 pub mod vdf;
+pub mod vfs;
 
 pub use conflict::FileConflict;
 pub use error::{Error, Result};
@@ -25,4 +25,4 @@ pub use fomod::{FomodConfig, FomodSession, Selections};
 pub use game::{GameSpec, InstalledGame, CATALOG};
 pub use manager::Manager;
 pub use profile::{ModEntry, Profile};
-pub use store::ModRecord;
+pub use store::{ModRecord, NexusRef};

@@ -25,21 +25,26 @@ impl NxmLink {
     pub fn parse(s: &str) -> Result<Self> {
         let url = Url::parse(s.trim()).map_err(|e| Error::BadLink(e.to_string()))?;
         if url.scheme() != "nxm" {
-            return Err(Error::BadLink(format!("scheme is '{}', not 'nxm'", url.scheme())));
+            return Err(Error::BadLink(format!(
+                "scheme is '{}', not 'nxm'",
+                url.scheme()
+            )));
         }
         let domain = url
             .host_str()
             .ok_or_else(|| Error::BadLink("missing game domain".into()))?
             .to_string();
 
-        let segs: Vec<&str> = url
-            .path_segments()
-            .map(|s| s.collect())
-            .unwrap_or_default();
+        let segs: Vec<&str> = url.path_segments().map(|s| s.collect()).unwrap_or_default();
         // Expect: ["mods", "<id>", "files", "<id>"]
         let mod_id = match segs.as_slice() {
             ["mods", m, "files", _] => parse_id(m, "mod_id")?,
-            _ => return Err(Error::BadLink(format!("unexpected path: /{}", segs.join("/")))),
+            _ => {
+                return Err(Error::BadLink(format!(
+                    "unexpected path: /{}",
+                    segs.join("/")
+                )))
+            }
         };
         let file_id = parse_id(segs[3], "file_id")?;
 
@@ -55,7 +60,14 @@ impl NxmLink {
             }
         }
 
-        Ok(NxmLink { domain, mod_id, file_id, key, expires, user_id })
+        Ok(NxmLink {
+            domain,
+            mod_id,
+            file_id,
+            key,
+            expires,
+            user_id,
+        })
     }
 }
 

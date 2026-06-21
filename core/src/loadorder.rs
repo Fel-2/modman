@@ -51,7 +51,10 @@ pub mod rimworld {
     fn find_about(mod_dir: &Path) -> Option<PathBuf> {
         for entry in WalkDir::new(mod_dir).max_depth(3).into_iter().flatten() {
             if entry.file_type().is_file()
-                && entry.file_name().to_string_lossy().eq_ignore_ascii_case("about.xml")
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("about.xml")
                 && entry
                     .path()
                     .parent()
@@ -69,7 +72,11 @@ pub mod rimworld {
     /// ordered list of enabled packageIds; `managed` is every packageId modeman
     /// controls (so stale ones are pruned). Non-managed entries (Core, DLC,
     /// hand-added) keep their position.
-    pub fn write(game: &InstalledGame, active: &[String], managed: &[String]) -> Result<Option<PathBuf>> {
+    pub fn write(
+        game: &InstalledGame,
+        active: &[String],
+        managed: &[String],
+    ) -> Result<Option<PathBuf>> {
         let Some(dir) = game.prefix_locallow(CONFIG_SUB) else {
             return Ok(None);
         };
@@ -83,7 +90,8 @@ pub mod rimworld {
 
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         let (version, existing_active, known) = parse(&existing);
-        let managed_set: BTreeSet<String> = managed.iter().map(|s| s.to_ascii_lowercase()).collect();
+        let managed_set: BTreeSet<String> =
+            managed.iter().map(|s| s.to_ascii_lowercase()).collect();
 
         // Keep non-managed entries in place, then append managed active in order.
         let mut out: Vec<String> = existing_active
@@ -96,7 +104,10 @@ pub mod rimworld {
             }
         }
         // Ensure Core is present and first.
-        if !out.iter().any(|e| e.eq_ignore_ascii_case("ludeon.rimworld")) {
+        if !out
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case("ludeon.rimworld"))
+        {
             out.insert(0, "ludeon.rimworld".to_string());
         }
 
@@ -209,7 +220,11 @@ pub mod paradox {
         let existing: Vec<String> = val
             .get("enabled_mods")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut out: Vec<String> = existing
@@ -253,7 +268,10 @@ pub mod smapi {
     pub fn manifest_name(mod_dir: &Path) -> Option<String> {
         for entry in WalkDir::new(mod_dir).max_depth(3).into_iter().flatten() {
             if entry.file_type().is_file()
-                && entry.file_name().to_string_lossy().eq_ignore_ascii_case("manifest.json")
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("manifest.json")
             {
                 if let Ok(text) = std::fs::read_to_string(entry.path()) {
                     if let Ok(v) = serde_json::from_str::<Value>(&text) {

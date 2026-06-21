@@ -39,7 +39,9 @@ pub fn is_redmod(mod_dir: &Path) -> bool {
         .flatten()
         .any(|e| {
             e.file_type().is_file()
-                && e.file_name().to_string_lossy().eq_ignore_ascii_case("info.json")
+                && e.file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("info.json")
         })
 }
 

@@ -24,8 +24,14 @@ fn tar_of(files: &[(&str, &[u8])], into: &Path) -> PathBuf {
         fs::write(p, data).unwrap();
     }
     let ok = Command::new("tar")
-        .arg("-cf").arg(into).arg("-C").arg(&root).arg(".")
-        .status().unwrap().success();
+        .arg("-cf")
+        .arg(into)
+        .arg("-C")
+        .arg(&root)
+        .arg(".")
+        .status()
+        .unwrap()
+        .success();
     assert!(ok);
     into.to_path_buf()
 }
@@ -44,10 +50,14 @@ fn detects_overwrite_winner() {
     let game_dir = lib.join("steamapps/common/SkyrimSE");
     fs::create_dir_all(&game_dir).unwrap();
 
-    let a = tar_of(&[("Textures/shared.dds", b"from-a"), ("a-only.esp", b"a")],
-                   &tmp("a").join("aaa.tar"));
-    let b = tar_of(&[("Textures/shared.dds", b"from-b"), ("b-only.esp", b"b")],
-                   &tmp("b").join("bbb.tar"));
+    let a = tar_of(
+        &[("Textures/shared.dds", b"from-a"), ("a-only.esp", b"a")],
+        &tmp("a").join("aaa.tar"),
+    );
+    let b = tar_of(
+        &[("Textures/shared.dds", b"from-b"), ("b-only.esp", b"b")],
+        &tmp("b").join("bbb.tar"),
+    );
 
     let installed = game::from_manual_path("skyrimse", game_dir.clone()).unwrap();
     let mut mgr = Manager::open(data_root, installed).unwrap();

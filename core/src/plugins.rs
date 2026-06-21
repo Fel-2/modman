@@ -40,7 +40,12 @@ pub fn plugins_in(mod_dir: &Path) -> Vec<String> {
 
 /// Load masters (`.esm`) before light masters (`.esl`) before normal (`.esp`).
 fn master_rank(name: &str) -> u8 {
-    match name.rsplit('.').next().map(|e| e.to_ascii_lowercase()).as_deref() {
+    match name
+        .rsplit('.')
+        .next()
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("esm") => 0,
         Some("esl") => 1,
         _ => 2,
@@ -51,7 +56,10 @@ fn master_rank(name: &str) -> u8 {
 fn plugins_txt_path(appdata: &Path) -> PathBuf {
     if let Ok(rd) = std::fs::read_dir(appdata) {
         for e in rd.flatten() {
-            if e.file_name().to_string_lossy().eq_ignore_ascii_case("plugins.txt") {
+            if e.file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("plugins.txt")
+            {
                 return e.path();
             }
         }
@@ -90,20 +98,19 @@ pub fn write_plugins_txt(
         std::fs::copy(&path, &backup).map_err(|e| Error::io(&backup, e))?;
     }
 
-    let managed_set: BTreeSet<String> =
-        managed.iter().map(|s| s.to_ascii_lowercase()).collect();
+    let managed_set: BTreeSet<String> = managed.iter().map(|s| s.to_ascii_lowercase()).collect();
 
     // Keep non-managed lines (base masters, DLC, user entries) untouched.
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let mut out: Vec<String> = Vec::new();
     for raw in existing.lines() {
         let name = line_name(raw).to_ascii_lowercase();
-        if name.is_empty() || raw.trim_start().starts_with('#') {
-            out.push(raw.to_string());
-        } else if !managed_set.contains(&name) {
+        let comment = name.is_empty() || raw.trim_start().starts_with('#');
+        // Keep comments/blanks and non-managed entries; managed ones are
+        // dropped here and re-emitted below in the correct order.
+        if comment || !managed_set.contains(&name) {
             out.push(raw.to_string());
         }
-        // managed entries are dropped; re-emitted below in correct order.
     }
 
     // Append our active plugins, marked active.

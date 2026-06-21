@@ -34,11 +34,7 @@ impl OverlayDirs {
 /// `mod_dirs` are in load order (lowest priority first); the game dir is the
 /// base layer, mods stack on top, later mods winning. The overlay is writable
 /// so the game can still save. Returns argv without a trailing `%command%`.
-pub fn bwrap_args(
-    deploy_root: &Path,
-    mod_dirs: &[PathBuf],
-    overlay: &OverlayDirs,
-) -> Vec<String> {
+pub fn bwrap_args(deploy_root: &Path, mod_dirs: &[PathBuf], overlay: &OverlayDirs) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "bwrap".into(),
         "--dev-bind".into(),
@@ -108,14 +104,20 @@ mod tests {
             upper: PathBuf::from("/store/.overlay/upper"),
             work: PathBuf::from("/store/.overlay/work"),
         };
-        let mods = vec![PathBuf::from("/store/mods/a"), PathBuf::from("/store/mods/b")];
+        let mods = vec![
+            PathBuf::from("/store/mods/a"),
+            PathBuf::from("/store/mods/b"),
+        ];
         let args = bwrap_args(Path::new("/game/Data"), &mods, &overlay);
 
         // Base layer is the game dir, then mods in order, then the overlay dest.
         let base_pos = args.iter().position(|a| a == "/game/Data").unwrap();
         let a_pos = args.iter().position(|a| a == "/store/mods/a").unwrap();
         let b_pos = args.iter().position(|a| a == "/store/mods/b").unwrap();
-        assert!(base_pos < a_pos && a_pos < b_pos, "base lowest, mods stack up");
+        assert!(
+            base_pos < a_pos && a_pos < b_pos,
+            "base lowest, mods stack up"
+        );
         assert!(args.contains(&"--overlay".to_string()));
 
         let opt = steam_launch_option(Path::new("/game/Data"), &mods, &overlay);

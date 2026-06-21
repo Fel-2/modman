@@ -21,6 +21,8 @@ pub enum InstallOutcome {
         slug: String,
         name: String,
         config: Box<FomodConfig>,
+        /// Root the FOMOD sources (incl. images) are relative to.
+        src_root: PathBuf,
     },
 }
 
@@ -70,8 +72,7 @@ pub struct Manager {
 impl Manager {
     /// Default data root: `$XDG_DATA_HOME/modeman`.
     pub fn default_data_root() -> Result<PathBuf> {
-        let base = dirs::data_dir()
-            .ok_or_else(|| Error::other("no XDG data dir; set HOME"))?;
+        let base = dirs::data_dir().ok_or_else(|| Error::other("no XDG data dir; set HOME"))?;
         Ok(base.join("modeman"))
     }
 
@@ -203,15 +204,25 @@ impl Manager {
         let source = store::source_label(archive_path);
 
         if let Some((cfg_path, src_root)) = fomod::find_config(&staged.dir) {
-            let session = FomodSession::load(&cfg_path, src_root)?;
+            let session = FomodSession::load(&cfg_path, src_root.clone())?;
             let config = Box::new(session.config.clone());
             let slug = staged.slug.clone();
             let name = staged.name.clone();
             self.pending_fomod.insert(
                 slug.clone(),
-                PendingFomod { session, staging: staged.dir, name: name.clone(), source },
+                PendingFomod {
+                    session,
+                    staging: staged.dir,
+                    name: name.clone(),
+                    source,
+                },
             );
-            return Ok(InstallOutcome::NeedsFomod { slug, name, config });
+            return Ok(InstallOutcome::NeedsFomod {
+                slug,
+                name,
+                config,
+                src_root,
+            });
         }
 
         // Plain archive: promote staging to the final mod dir.
@@ -225,7 +236,13 @@ impl Manager {
             Engine::RimWorld => loadorder::rimworld::mod_name(&final_dir).unwrap_or(staged.name),
             _ => staged.name,
         };
-        let record = ModRecord { slug: staged.slug, name, source };
+        let record = ModRecord {
+            slug: staged.slug,
+            name,
+            source,
+            size_bytes: store::dir_size(&final_dir),
+            nexus: None,
+        };
         self.register_record(record.clone())?;
         Ok(InstallOutcome::Installed(record))
     }
@@ -245,6 +262,8 @@ impl Manager {
             slug: slug.to_string(),
             name: pending.name,
             source: pending.source,
+            size_bytes: store::dir_size(&final_dir),
+            nexus: None,
         };
         self.register_record(record.clone())?;
         Ok(record)
@@ -263,6 +282,34 @@ impl Manager {
             p.ensure(&record.slug);
         }
         self.save()
+    }
+
+    /// Attach Nexus origin metadata to a mod (for later update checks).
+    pub fn set_nexus_ref(&mut self, slug: &str, nexus: store::NexusRef) -> Result<()> {
+        if let Some(rec) = self.state.mods.iter_mut().find(|m| m.slug == slug) {
+            rec.nexus = Some(nexus);
+        }
+        self.save()
+    }
+
+    /// Record an updated installed file version for a mod's Nexus ref.
+    pub fn set_nexus_version(&mut self, slug: &str, file_id: u64, version: String) -> Result<()> {
+        if let Some(rec) = self.state.mods.iter_mut().find(|m| m.slug == slug) {
+            if let Some(nx) = rec.nexus.as_mut() {
+                nx.file_id = file_id;
+                nx.version = version;
+            }
+        }
+        self.save()
+    }
+
+    /// Mods that carry a Nexus ref, for the update checker.
+    pub fn nexus_mods(&self) -> Vec<(String, store::NexusRef)> {
+        self.state
+            .mods
+            .iter()
+            .filter_map(|m| m.nexus.clone().map(|n| (m.slug.clone(), n)))
+            .collect()
     }
 
     /// Run a Cyberpunk REDmod deploy (compiles `mods/` into `archive/pc/mod`).
@@ -306,8 +353,11 @@ impl Manager {
 
     /// File conflicts among the active profile's enabled mods, in load order.
     pub fn conflicts(&self) -> Vec<FileConflict> {
-        let slugs: Vec<String> =
-            self.active_profile().enabled_in_order().map(String::from).collect();
+        let slugs: Vec<String> = self
+            .active_profile()
+            .enabled_in_order()
+            .map(String::from)
+            .collect();
         let sources = conflict::sources_for(slugs.iter().map(|s| s.as_str()), |s| {
             self.state
                 .mods
@@ -425,7 +475,12 @@ impl Manager {
             }
         }
         if self.game.spec.engine == Engine::Paradox {
-            if let Some(json_dir) = self.game.deploy_root().ok().and_then(|r| r.parent().map(Path::to_path_buf)) {
+            if let Some(json_dir) = self
+                .game
+                .deploy_root()
+                .ok()
+                .and_then(|r| r.parent().map(Path::to_path_buf))
+            {
                 let managed = self.paradox_all_descriptors();
                 if let Err(e) = loadorder::paradox::clear(&json_dir, &managed) {
                     tracing::warn!("dlc_load.json clear failed: {e}");

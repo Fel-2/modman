@@ -112,7 +112,10 @@ impl NexusClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
-            return Err(Error::Api { status: status.as_u16(), body });
+            return Err(Error::Api {
+                status: status.as_u16(),
+                body,
+            });
         }
         Ok(resp.json()?)
     }
@@ -129,12 +132,16 @@ impl NexusClient {
     /// A curated mod list for a game. `kind` ∈ {`trending`, `latest_added`,
     /// `latest_updated`}. (Nexus v1 has no keyword search.)
     pub fn mod_list(&self, domain: &str, kind: ModList) -> Result<Vec<ModInfo>> {
-        self.get_json(&format!("{API_BASE}/games/{domain}/mods/{}.json", kind.path()))
+        self.get_json(&format!(
+            "{API_BASE}/games/{domain}/mods/{}.json",
+            kind.path()
+        ))
     }
 
     pub fn files(&self, domain: &str, mod_id: u64) -> Result<Vec<ModFile>> {
-        let r: FilesResponse =
-            self.get_json(&format!("{API_BASE}/games/{domain}/mods/{mod_id}/files.json"))?;
+        let r: FilesResponse = self.get_json(&format!(
+            "{API_BASE}/games/{domain}/mods/{mod_id}/files.json"
+        ))?;
         Ok(r.files)
     }
 
@@ -149,9 +156,8 @@ impl NexusClient {
         file_id: u64,
         nxm: Option<&NxmLink>,
     ) -> Result<Vec<DownloadLink>> {
-        let mut url = format!(
-            "{API_BASE}/games/{domain}/mods/{mod_id}/files/{file_id}/download_link.json"
-        );
+        let mut url =
+            format!("{API_BASE}/games/{domain}/mods/{mod_id}/files/{file_id}/download_link.json");
         if let Some(l) = nxm {
             if let (Some(key), Some(exp)) = (&l.key, l.expires) {
                 url.push_str(&format!("?key={key}&expires={exp}"));
@@ -181,7 +187,10 @@ impl NexusClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
-            return Err(Error::Api { status: status.as_u16(), body });
+            return Err(Error::Api {
+                status: status.as_u16(),
+                body,
+            });
         }
         let total = resp.content_length();
         if let Some(parent) = dest.parent() {

@@ -111,10 +111,18 @@ mod tests {
         assert_eq!(n, 2);
 
         let alpha: i64 = conn
-            .query_row("SELECT enabled FROM playsets_mods WHERE modId='m1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT enabled FROM playsets_mods WHERE modId='m1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         let beta: i64 = conn
-            .query_row("SELECT enabled FROM playsets_mods WHERE modId='m2'", [], |r| r.get(0))
+            .query_row(
+                "SELECT enabled FROM playsets_mods WHERE modId='m2'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(alpha, 1);
         assert_eq!(beta, 0);

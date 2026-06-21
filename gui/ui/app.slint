@@ -7,6 +7,7 @@ export struct ModRow {
     slug: string,
     name: string,
     enabled: bool,
+    size: string,
 }
 
 export struct ConflictRow {
@@ -76,6 +77,8 @@ export component MainWindow inherits Window {
     in property <int> fomod-step-index;
     in property <int> fomod-step-count;
     in property <[FomodGroup]> fomod-groups;
+    in property <image> fomod-image;
+    in property <string> fomod-desc;
 
     // ---- callbacks to Rust ----
     callback rescan();
@@ -101,6 +104,8 @@ export component MainWindow inherits Window {
     callback browse-mod(int);
     callback browse-download(int);
     callback fomod-toggle(int, int, bool);
+    callback fomod-select(int, int);
+    callback check-updates();
     callback fomod-next();
     callback fomod-back();
     callback fomod-install();
@@ -169,6 +174,12 @@ export component MainWindow inherits Window {
                                 horizontal-stretch: 1;
                                 overflow: elide;
                             }
+                            Text {
+                                text: item.size;
+                                vertical-alignment: center;
+                                color: #888;
+                                font-size: 11px;
+                            }
                             Button { text: "▲"; width: 34px; clicked => { root.move-up(idx); } }
                             Button { text: "▼"; width: 34px; clicked => { root.move-down(idx); } }
                             Button { text: "✕"; width: 34px; clicked => { root.remove(idx); } }
@@ -227,6 +238,7 @@ export component MainWindow inherits Window {
                     HorizontalBox {
                         spacing: 8px;
                         Button { text: "Browse Nexus mods…"; clicked => { root.browse-open-cb(); } }
+                        Button { text: "Check updates"; clicked => { root.check-updates(); } }
                         Rectangle { horizontal-stretch: 1; }
                         Text { text: nexus-status; font-size: 11px; color: #8ab4f8; vertical-alignment: center; }
                     }
@@ -374,37 +386,64 @@ export component MainWindow inherits Window {
                         color: #999;
                         font-size: 12px;
                     }
-                    ScrollView {
+                    HorizontalLayout {
                         vertical-stretch: 1;
-                        VerticalLayout {
-                            spacing: 12px;
-                            for group[gi] in fomod-groups : VerticalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: group.name + "   (" + group.kind + ")";
-                                    font-size: 13px;
-                                    color: #ddd;
-                                }
-                                for plugin[pi] in group.plugins : Rectangle {
-                                    background: phover.has-hover ? #ffffff10 : transparent;
-                                    phover := TouchArea {}
-                                    HorizontalLayout {
-                                        padding: 4px;
-                                        spacing: 8px;
-                                        CheckBox {
-                                            checked: plugin.selected;
-                                            toggled => { root.fomod-toggle(gi, pi, self.checked); }
+                        spacing: 10px;
+                        ScrollView {
+                            width: 55%;
+                            VerticalLayout {
+                                spacing: 12px;
+                                for group[gi] in fomod-groups : VerticalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: group.name + "   (" + group.kind + ")";
+                                        font-size: 13px;
+                                        color: #ddd;
+                                    }
+                                    for plugin[pi] in group.plugins : Rectangle {
+                                        background: phover.has-hover ? #ffffff10 : transparent;
+                                        phover := TouchArea {
+                                            clicked => { root.fomod-select(gi, pi); }
                                         }
-                                        VerticalLayout {
-                                            Text { text: plugin.name; }
-                                            Text {
-                                                text: plugin.description;
-                                                font-size: 11px;
-                                                color: #999;
-                                                wrap: word-wrap;
+                                        HorizontalLayout {
+                                            padding: 4px;
+                                            spacing: 8px;
+                                            CheckBox {
+                                                checked: plugin.selected;
+                                                toggled => { root.fomod-toggle(gi, pi, self.checked); }
+                                            }
+                                            VerticalLayout {
+                                                Text { text: plugin.name; }
+                                                Text {
+                                                    text: plugin.kind;
+                                                    font-size: 10px;
+                                                    color: #777;
+                                                }
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+                        // Preview pane: selected plugin image + description.
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-width: 1px;
+                            border-color: #333;
+                            VerticalBox {
+                                padding: 8px;
+                                spacing: 6px;
+                                Image {
+                                    source: fomod-image;
+                                    image-fit: contain;
+                                    vertical-stretch: 1;
+                                    min-height: 120px;
+                                }
+                                Text {
+                                    text: fomod-desc;
+                                    font-size: 11px;
+                                    color: #bbb;
+                                    wrap: word-wrap;
                                 }
                             }
                         }

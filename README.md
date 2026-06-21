@@ -139,6 +139,8 @@ These ship but can't be validated headless — try them on a real install:
 - [x] FOMOD pattern-based plugin `typeDescriptor` evaluation (flag-conditional)
 - [x] Paradox launcher-v2 playset DB — toggles `enabled` in the active playset
       (conservative; backs up the DB)
+- [x] UI polish — mod sizes, FOMOD option images/descriptions, Nexus update
+      check (newer-file detection), GitHub Actions CI (fmt + clippy + tests)
 - [ ] More games / engines as needed
 - [ ] Overlayfs/VFS deploy backend (game dir untouched)
 - [ ] GOG / Heroic / Lutris detection

@@ -17,8 +17,10 @@ fn tmp(name: &str) -> PathBuf {
 
 fn make_tar(dir: &Path, archive: &Path) {
     let status = Command::new("tar")
-        .arg("-cf").arg(archive)
-        .arg("-C").arg(dir)
+        .arg("-cf")
+        .arg(archive)
+        .arg("-C")
+        .arg(dir)
         .arg(".")
         .status()
         .expect("run tar");
@@ -116,13 +118,17 @@ fn deploy_preserves_and_restores_vanilla_files() {
     // Mod content is live; vanilla preserved as a backup.
     assert_eq!(fs::read(&vanilla).unwrap(), b"MODDED");
     assert!(vanilla.is_symlink());
-    assert!(game_dir.join("Data/Textures/wall.dds.modeman-orig").exists());
+    assert!(game_dir
+        .join("Data/Textures/wall.dds.modeman-orig")
+        .exists());
 
     mgr.clear().unwrap();
     // Vanilla file is back, byte-for-byte; backup removed.
     assert!(!vanilla.is_symlink());
     assert_eq!(fs::read(&vanilla).unwrap(), b"VANILLA");
-    assert!(!game_dir.join("Data/Textures/wall.dds.modeman-orig").exists());
+    assert!(!game_dir
+        .join("Data/Textures/wall.dds.modeman-orig")
+        .exists());
 }
 
 #[test]
@@ -194,7 +200,9 @@ fn stardew_uses_manifest_name() {
     let _ = mgr.install_archive(&archive).unwrap();
     assert_eq!(mgr.mods()[0].name, "Lookup Anything");
     mgr.deploy().unwrap();
-    assert!(game_dir.join("Mods/LookupAnything/manifest.json").is_symlink());
+    assert!(game_dir
+        .join("Mods/LookupAnything/manifest.json")
+        .is_symlink());
 }
 
 #[test]
@@ -211,7 +219,11 @@ fn paradox_writes_dlc_load() {
     fs::create_dir_all(&docs).unwrap();
 
     // Mod ships a descriptor + folder.
-    fs::write(mod_src.join("mymod.mod"), b"name=\"My Mod\"\npath=\"mod/mymod\"").unwrap();
+    fs::write(
+        mod_src.join("mymod.mod"),
+        b"name=\"My Mod\"\npath=\"mod/mymod\"",
+    )
+    .unwrap();
     fs::create_dir_all(mod_src.join("mymod")).unwrap();
     fs::write(mod_src.join("mymod/descriptor.mod"), b"name=\"My Mod\"").unwrap();
     let archive = tmp("arc-ck").join("mymod.tar");

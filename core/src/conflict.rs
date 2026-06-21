@@ -44,7 +44,11 @@ pub fn detect(sources: &[(String, PathBuf)]) -> Vec<FileConflict> {
         .filter(|(_, providers)| providers.len() > 1)
         .map(|(rel_path, providers)| {
             let winner = providers.last().cloned().unwrap_or_default();
-            FileConflict { rel_path, providers, winner }
+            FileConflict {
+                rel_path,
+                providers,
+                winner,
+            }
         })
         .collect()
 }
