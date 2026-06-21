@@ -1,0 +1,23 @@
+[package]
+name = "modeman-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "modeman_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+walkdir.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+# libarchive-backed extraction: handles zip / 7z / rar (read).
+compress-tools = "0.15"
+# read-only XML DOM for FOMOD ModuleConfig.xml parsing.
+roxmltree = "0.20"
+# Paradox launcher-v2 playset DB (bundled sqlite — no system dependency).
+rusqlite = { version = "0.32", features = ["bundled"] }

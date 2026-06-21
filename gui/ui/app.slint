@@ -1,0 +1,437 @@
+import {
+    Button, ComboBox, ListView, ScrollView, CheckBox, LineEdit,
+    VerticalBox, HorizontalBox, GroupBox
+} from "std-widgets.slint";
+
+export struct ModRow {
+    slug: string,
+    name: string,
+    enabled: bool,
+}
+
+export struct ConflictRow {
+    path: string,
+    winner: string,
+    providers: string,
+}
+
+export struct FomodPlugin {
+    name: string,
+    description: string,
+    selected: bool,
+    kind: string,
+}
+
+export struct FomodGroup {
+    name: string,
+    kind: string,
+    plugins: [FomodPlugin],
+}
+
+export struct BrowseMod {
+    id: int,
+    name: string,
+    author: string,
+    summary: string,
+}
+
+export struct BrowseFile {
+    id: int,
+    name: string,
+    info: string,
+}
+
+export component MainWindow inherits Window {
+    title: "modeman";
+    preferred-width: 960px;
+    preferred-height: 680px;
+    min-width: 720px;
+    min-height: 480px;
+
+    // ---- inputs from Rust ----
+    in property <[string]> games;
+    in property <[string]> profiles;
+    in property <int> active-game;
+    in property <int> active-profile;
+    in property <[ModRow]> mods;
+    in property <string> status: "Ready.";
+    in property <string> game-path;
+    in property <bool> deployed;
+    in property <int> deploy-method;
+    in property <string> api-key;
+    in property <string> nexus-status: "Not signed in.";
+
+    in property <[ConflictRow]> conflicts;
+    in property <bool> conflicts-open;
+
+    in property <bool> browse-open;
+    in property <[BrowseMod]> browse-mods;
+    in property <[BrowseFile]> browse-files;
+    in property <string> browse-title: "Browse";
+    in property <string> browse-status;
+
+    in property <bool> fomod-active;
+    in property <string> fomod-module;
+    in property <string> fomod-step-name;
+    in property <int> fomod-step-index;
+    in property <int> fomod-step-count;
+    in property <[FomodGroup]> fomod-groups;
+
+    // ---- callbacks to Rust ----
+    callback rescan();
+    callback save-key(string);
+    callback validate-key(string);
+    callback nxm-install(string);
+    callback select-game(int);
+    callback select-profile(int);
+    callback new-profile(string);
+    callback install();
+    callback remove(int);
+    callback toggle(int, bool);
+    callback move-up(int);
+    callback move-down(int);
+    callback deploy();
+    callback clear-deploy();
+    callback set-deploy-method(int);
+    callback check-conflicts();
+    callback close-conflicts();
+    callback browse-open-cb();
+    callback browse-close();
+    callback browse-list(int);
+    callback browse-mod(int);
+    callback browse-download(int);
+    callback fomod-toggle(int, int, bool);
+    callback fomod-next();
+    callback fomod-back();
+    callback fomod-install();
+    callback fomod-cancel();
+
+    property <string> new-profile-name;
+    property <string> key-input: api-key;
+    property <string> nxm-input;
+
+    Rectangle {
+        // ===== main layout =====
+        VerticalBox {
+            padding: 12px;
+            spacing: 10px;
+
+            HorizontalBox {
+                spacing: 8px;
+                Text { text: "Game:"; vertical-alignment: center; }
+                ComboBox {
+                    model: games;
+                    current-index: active-game;
+                    selected(v) => { root.select-game(self.current-index); }
+                    horizontal-stretch: 1;
+                }
+                Button { text: "Rescan"; clicked => { root.rescan(); } }
+                Text { text: "Profile:"; vertical-alignment: center; }
+                ComboBox {
+                    model: profiles;
+                    current-index: active-profile;
+                    selected(v) => { root.select-profile(self.current-index); }
+                    min-width: 160px;
+                }
+                LineEdit {
+                    placeholder-text: "new profile name";
+                    edited(t) => { root.new-profile-name = t; }
+                    min-width: 140px;
+                }
+                Button { text: "+"; clicked => { root.new-profile(root.new-profile-name); } }
+            }
+
+            Text {
+                text: "Install path: " + game-path;
+                color: #888;
+                font-size: 11px;
+            }
+
+            GroupBox {
+                title: "Mods  (top = lowest priority, bottom wins conflicts)";
+                vertical-stretch: 1;
+                ListView {
+                    for item[idx] in mods : Rectangle {
+                        height: 36px;
+                        background: touch.has-hover ? #ffffff10 : transparent;
+                        touch := TouchArea {}
+                        HorizontalBox {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            spacing: 8px;
+                            CheckBox {
+                                checked: item.enabled;
+                                toggled => { root.toggle(idx, self.checked); }
+                            }
+                            Text {
+                                text: item.name;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                            Button { text: "▲"; width: 34px; clicked => { root.move-up(idx); } }
+                            Button { text: "▼"; width: 34px; clicked => { root.move-down(idx); } }
+                            Button { text: "✕"; width: 34px; clicked => { root.remove(idx); } }
+                        }
+                    }
+                }
+            }
+
+            HorizontalBox {
+                spacing: 8px;
+                Button { text: "Install mod…"; clicked => { root.install(); } }
+                Button { text: "Conflicts"; clicked => { root.check-conflicts(); } }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: "Link:"; vertical-alignment: center; color: #999; }
+                ComboBox {
+                    model: ["symlink", "hardlink"];
+                    current-index: deploy-method;
+                    min-width: 110px;
+                    selected(v) => { root.set-deploy-method(self.current-index); }
+                }
+                Text {
+                    text: deployed ? "● deployed" : "○ not deployed";
+                    color: deployed ? #4caf50 : #999;
+                    vertical-alignment: center;
+                }
+                Button { text: "Clear"; enabled: deployed; clicked => { root.clear-deploy(); } }
+                Button { text: "Deploy"; primary: true; clicked => { root.deploy(); } }
+            }
+
+            GroupBox {
+                title: "Nexus Mods";
+                VerticalBox {
+                    spacing: 6px;
+                    HorizontalBox {
+                        spacing: 8px;
+                        Text { text: "API key:"; vertical-alignment: center; }
+                        LineEdit {
+                            placeholder-text: "personal API key (nexusmods.com → Settings → API)";
+                            text: root.key-input;
+                            edited(t) => { root.key-input = t; }
+                            horizontal-stretch: 1;
+                        }
+                        Button { text: "Save"; clicked => { root.save-key(root.key-input); } }
+                        Button { text: "Validate"; clicked => { root.validate-key(root.key-input); } }
+                    }
+                    HorizontalBox {
+                        spacing: 8px;
+                        Text { text: "nxm link:"; vertical-alignment: center; }
+                        LineEdit {
+                            placeholder-text: "nxm://<game>/mods/<id>/files/<id>?...";
+                            edited(t) => { root.nxm-input = t; }
+                            horizontal-stretch: 1;
+                        }
+                        Button { text: "Download & install"; clicked => { root.nxm-install(root.nxm-input); } }
+                    }
+                    HorizontalBox {
+                        spacing: 8px;
+                        Button { text: "Browse Nexus mods…"; clicked => { root.browse-open-cb(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: nexus-status; font-size: 11px; color: #8ab4f8; vertical-alignment: center; }
+                    }
+                }
+            }
+
+            Text { text: status; font-size: 11px; color: #aaa; wrap: word-wrap; }
+        }
+
+        // ===== conflict overlay =====
+        if conflicts-open : Rectangle {
+            background: #000000aa;
+            TouchArea {}  // swallow clicks behind the panel
+            Rectangle {
+                width: 70%;
+                height: 70%;
+                background: #1e1e1e;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #444;
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 8px;
+                    HorizontalBox {
+                        Text {
+                            text: "File conflicts (" + conflicts.length + ")";
+                            font-size: 16px;
+                            horizontal-stretch: 1;
+                        }
+                        Button { text: "Close"; clicked => { root.close-conflicts(); } }
+                    }
+                    Text {
+                        text: conflicts.length == 0 ? "No conflicts among enabled mods." : "Winner = mod lowest in the list / last in load order.";
+                        color: #999;
+                        font-size: 11px;
+                    }
+                    ListView {
+                        for c in conflicts : Rectangle {
+                            height: 40px;
+                            VerticalBox {
+                                padding: 2px;
+                                spacing: 0px;
+                                Text { text: c.path; overflow: elide; }
+                                Text {
+                                    text: "providers: " + c.providers + "   →  wins: " + c.winner;
+                                    font-size: 11px;
+                                    color: #8ab4f8;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===== Nexus browse overlay =====
+        if browse-open : Rectangle {
+            background: #000000cc;
+            TouchArea {}
+            Rectangle {
+                width: 84%;
+                height: 84%;
+                background: #1e1e1e;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #444;
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 8px;
+                    HorizontalBox {
+                        spacing: 8px;
+                        Text { text: browse-title; font-size: 16px; horizontal-stretch: 1; vertical-alignment: center; }
+                        Button { text: "Trending"; clicked => { root.browse-list(0); } }
+                        Button { text: "Latest"; clicked => { root.browse-list(1); } }
+                        Button { text: "Updated"; clicked => { root.browse-list(2); } }
+                        Button { text: "Close"; clicked => { root.browse-close(); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        // mods column
+                        Rectangle {
+                            width: 50%;
+                            border-width: 1px;
+                            border-color: #333;
+                            ListView {
+                                for m in browse-mods : Rectangle {
+                                    height: 56px;
+                                    background: mh.has-hover ? #ffffff10 : transparent;
+                                    mh := TouchArea { clicked => { root.browse-mod(m.id); } }
+                                    VerticalBox {
+                                        padding: 6px;
+                                        spacing: 0px;
+                                        Text { text: m.name; overflow: elide; }
+                                        Text { text: "by " + m.author; font-size: 10px; color: #888; }
+                                        Text { text: m.summary; font-size: 10px; color: #aaa; overflow: elide; }
+                                    }
+                                }
+                            }
+                        }
+                        // files column
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-width: 1px;
+                            border-color: #333;
+                            ListView {
+                                for f in browse-files : Rectangle {
+                                    height: 48px;
+                                    HorizontalBox {
+                                        padding: 6px;
+                                        spacing: 8px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            Text { text: f.name; overflow: elide; }
+                                            Text { text: f.info; font-size: 10px; color: #888; }
+                                        }
+                                        Button { text: "Download"; clicked => { root.browse-download(f.id); } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Text { text: browse-status; font-size: 11px; color: #8ab4f8; wrap: word-wrap; }
+                }
+            }
+        }
+
+        // ===== FOMOD wizard overlay =====
+        if fomod-active : Rectangle {
+            background: #000000cc;
+            TouchArea {}
+            Rectangle {
+                width: 78%;
+                height: 82%;
+                background: #1e1e1e;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #444;
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 8px;
+                    Text { text: fomod-module; font-size: 18px; }
+                    Text {
+                        text: "Step " + (fomod-step-index + 1) + " / " + fomod-step-count + ": " + fomod-step-name;
+                        color: #999;
+                        font-size: 12px;
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 12px;
+                            for group[gi] in fomod-groups : VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: group.name + "   (" + group.kind + ")";
+                                    font-size: 13px;
+                                    color: #ddd;
+                                }
+                                for plugin[pi] in group.plugins : Rectangle {
+                                    background: phover.has-hover ? #ffffff10 : transparent;
+                                    phover := TouchArea {}
+                                    HorizontalLayout {
+                                        padding: 4px;
+                                        spacing: 8px;
+                                        CheckBox {
+                                            checked: plugin.selected;
+                                            toggled => { root.fomod-toggle(gi, pi, self.checked); }
+                                        }
+                                        VerticalLayout {
+                                            Text { text: plugin.name; }
+                                            Text {
+                                                text: plugin.description;
+                                                font-size: 11px;
+                                                color: #999;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalBox {
+                        spacing: 8px;
+                        Button { text: "Cancel"; clicked => { root.fomod-cancel(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button {
+                            text: "◀ Back";
+                            enabled: fomod-step-index > 0;
+                            clicked => { root.fomod-back(); }
+                        }
+                        Button {
+                            text: fomod-step-index + 1 >= fomod-step-count ? "Install" : "Next ▶";
+                            primary: true;
+                            clicked => {
+                                if (fomod-step-index + 1 >= fomod-step-count) {
+                                    root.fomod-install();
+                                } else {
+                                    root.fomod-next();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
