@@ -17,6 +17,8 @@ Cyberpunk 2077. Designed around Proton/Steam realities on Linux.
       prefix, preserving base/DLC masters
 - [x] Nexus Mods integration — API-key login, `nxm://` link download + install,
       protocol-handler registration, in-UI browse (trending/latest/updated)
+- [x] Free mod platforms — Thunderstore, mod.io, GameBanana: in-UI browse +
+      download with no premium wall (unlike Nexus's premium-only download API)
 - [x] FOMOD scripted installer — wizard with stepped option groups, condition
       flags, case-insensitive source resolution
 - [x] Conflict viewer — which enabled mods overwrite each file, and who wins
@@ -61,10 +63,14 @@ modeman/
 │   ├── conflict.rs  file-overwrite conflict detection
 │   ├── deploy.rs    Deployer trait + SymlinkDeployer
 │   └── manager.rs   orchestration + JSON persistence
-├── nexus/       # modeman-nexus: network layer
+├── nexus/       # modeman-nexus: Nexus network layer
 │   ├── nxm.rs       nxm:// link parser
 │   ├── client.rs    blocking Nexus REST client + downloads
 │   └── protocol.rs  nxm:// .desktop handler registration
+├── platform/    # modeman-platform: free platforms behind one trait
+│   ├── thunderstore.rs
+│   ├── modio.rs
+│   └── gamebanana.rs
 └── gui/         # modeman-gui: Slint front end (bin: `modeman`)
     ├── ui/app.slint
     └── src/main.rs  worker threads → mpsc → Slint Timer
@@ -109,6 +115,25 @@ cargo run -p modeman-gui      # launches `modeman`
 
 Free accounts download via the `nxm://` link (its one-time key authorizes the
 fetch). Premium accounts can also resolve direct links.
+
+## Free mod platforms
+
+Nexus gates in-app downloads behind premium. modeman also browses + downloads,
+fully free, from:
+
+- **Thunderstore** — `thunderstore.io`, no auth. Game = community slug
+  (e.g. `lethal-company`). Best for Unity/BepInEx games.
+- **mod.io** — official, free API key (no premium tier). Game = numeric
+  `game_id`. Paste the key in the browse panel.
+- **GameBanana** — `gamebanana.com`, no auth. Game = numeric game id. Large
+  catalog incl. Cyberpunk.
+
+In the **Browse** overlay pick a source, enter the game id/slug, then
+Top/Newest/Updated → a mod → Download. The downloaded archive flows through the
+normal install pipeline (FOMOD wizard fires if scripted). Game ids/slugs are
+entered manually for now (platform catalogs differ from the Nexus domains).
+
+The `platform` crate holds one `ModPlatform` trait with a provider each.
 
 ## Experimental (real-machine only)
 

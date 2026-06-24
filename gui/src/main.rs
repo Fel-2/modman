@@ -7,7 +7,73 @@ use modeman_core::deploy::LinkMethod;
 use modeman_core::fomod::{FomodConfig, GroupKind, PluginType, Selections};
 use modeman_core::manager::InstallOutcome;
 use modeman_core::{game, FileConflict, Manager, NexusRef};
-use modeman_nexus::{ModFile, ModInfo, ModList, NexusClient, NxmLink};
+use modeman_nexus::{ModList, NexusClient, NxmLink};
+use modeman_platform::{
+    gamebanana::GameBanana, modio::Modio, thunderstore::Thunderstore, ListSort, ModPlatform,
+};
+
+/// Source-agnostic browse row.
+#[derive(Clone)]
+struct BrowseEntry {
+    id: String,
+    name: String,
+    author: String,
+    summary: String,
+    downloads: u64,
+}
+
+/// Source-agnostic downloadable file. `url` is set for free platforms; `None`
+/// means a Nexus file that must be link-resolved (premium) at download time.
+#[derive(Clone)]
+struct BrowseFileEntry {
+    id: String,
+    name: String,
+    version: String,
+    size: u64,
+    url: Option<String>,
+}
+
+/// Browse sources, by combo index.
+#[derive(Clone, Copy, PartialEq)]
+enum Source {
+    Nexus,
+    Thunderstore,
+    Modio,
+    GameBanana,
+}
+
+impl Source {
+    fn from_index(i: usize) -> Source {
+        match i {
+            1 => Source::Thunderstore,
+            2 => Source::Modio,
+            3 => Source::GameBanana,
+            _ => Source::Nexus,
+        }
+    }
+    fn labels() -> [&'static str; 4] {
+        ["Nexus", "Thunderstore", "mod.io", "GameBanana"]
+    }
+}
+
+/// Build a free-platform client for a source (not Nexus).
+fn make_platform(
+    src: Source,
+    modio_key: &str,
+) -> std::result::Result<Box<dyn ModPlatform>, String> {
+    match src {
+        Source::Thunderstore => Thunderstore::new()
+            .map(|p| Box::new(p) as Box<dyn ModPlatform>)
+            .map_err(|e| e.to_string()),
+        Source::Modio => Modio::new(modio_key)
+            .map(|p| Box::new(p) as Box<dyn ModPlatform>)
+            .map_err(|e| e.to_string()),
+        Source::GameBanana => GameBanana::new()
+            .map(|p| Box::new(p) as Box<dyn ModPlatform>)
+            .map_err(|e| e.to_string()),
+        Source::Nexus => Err("nexus uses its own client".into()),
+    }
+}
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -20,14 +86,16 @@ enum Bg {
     NexusStatus(String),
     Downloaded {
         path: PathBuf,
-        domain: String,
+        /// Domain to switch the active game to (Nexus); `None` installs into
+        /// the currently-open game (platform browse).
+        switch: Option<String>,
         /// Nexus (mod_id, file_id, version) if downloaded from Nexus.
         nexus: Option<(u64, u64, String)>,
     },
-    BrowseMods(Vec<ModInfo>),
-    BrowseFiles {
-        mod_name: String,
-        files: Vec<ModFile>,
+    BrowseList(Vec<BrowseEntry>),
+    BrowseFileList {
+        title: String,
+        files: Vec<BrowseFileEntry>,
     },
     BrowseMsg(String),
 }
@@ -57,11 +125,14 @@ struct App {
     conflicts_open: bool,
     wizard: Option<Wizard>,
     browse_open: bool,
-    browse_mods: Vec<ModInfo>,
-    browse_files: Vec<ModFile>,
+    browse_mods: Vec<BrowseEntry>,
+    browse_files: Vec<BrowseFileEntry>,
     browse_title: String,
     browse_status: String,
-    browse_sel_mod: Option<u64>,
+    browse_sel_mod: Option<String>,
+    browse_platform: usize,
+    browse_game_id: String,
+    modio_key: String,
 }
 
 impl App {
@@ -69,6 +140,10 @@ impl App {
         let data_root =
             Manager::default_data_root().unwrap_or_else(|_| PathBuf::from("./modeman-data"));
         let api_key = std::fs::read_to_string(data_root.join("nexus-apikey.txt"))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let modio_key = std::fs::read_to_string(data_root.join("modio-apikey.txt"))
             .unwrap_or_default()
             .trim()
             .to_string();
@@ -90,6 +165,9 @@ impl App {
             browse_title: "Browse".into(),
             browse_status: String::new(),
             browse_sel_mod: None,
+            browse_platform: 0,
+            browse_game_id: String::new(),
+            modio_key,
         }
     }
 
@@ -100,6 +178,60 @@ impl App {
             .map(|m| m.game().spec.nexus_domain)
             .filter(|d| !d.is_empty())
             .map(String::from)
+    }
+
+    fn source(&self) -> Source {
+        Source::from_index(self.browse_platform)
+    }
+
+    /// The game id/slug to query for the current source.
+    fn browse_game(&self) -> String {
+        match self.source() {
+            Source::Nexus => self.nexus_domain().unwrap_or_default(),
+            _ => self.browse_game_id.clone(),
+        }
+    }
+
+    fn save_modio_key(&mut self, key: &str) {
+        self.modio_key = key.trim().to_string();
+        let _ = std::fs::create_dir_all(&self.data_root);
+        let _ = std::fs::write(self.data_root.join("modio-apikey.txt"), &self.modio_key);
+    }
+
+    /// Kick off a browse listing for the current source + game.
+    fn trigger_list(&mut self, sort: ListSort) {
+        let game = self.browse_game();
+        if game.is_empty() {
+            self.browse_status = "Enter a game id / community slug for this source.".into();
+            return;
+        }
+        self.browse_status = "Loading…".into();
+        match self.source() {
+            Source::Nexus => {
+                if self.api_key.is_empty() {
+                    self.browse_status = "Set a Nexus API key first.".into();
+                    return;
+                }
+                spawn_nexus_list(self.tx.clone(), self.api_key.clone(), game, sort);
+            }
+            src => spawn_pl_list(self.tx.clone(), src, self.modio_key.clone(), game, sort),
+        }
+    }
+
+    /// Kick off fetching a mod's files for the current source.
+    fn trigger_files(&mut self, mod_id: String) {
+        let game = self.browse_game();
+        self.browse_sel_mod = Some(mod_id.clone());
+        self.browse_status = "Loading files…".into();
+        match self.source() {
+            Source::Nexus => match mod_id.parse::<u64>() {
+                Ok(id) if !self.api_key.is_empty() => {
+                    spawn_nexus_files(self.tx.clone(), self.api_key.clone(), game, id)
+                }
+                _ => self.browse_status = "Set a Nexus API key first.".into(),
+            },
+            src => spawn_pl_files(self.tx.clone(), src, self.modio_key.clone(), game, mod_id),
+        }
     }
 
     fn cache_dir(&self) -> PathBuf {
@@ -322,14 +454,26 @@ fn refresh(ui: &MainWindow, app: &App) {
     ui.set_browse_open(app.browse_open);
     ui.set_browse_title(app.browse_title.as_str().into());
     ui.set_browse_status(app.browse_status.as_str().into());
+    let platforms: Vec<SharedString> = Source::labels().iter().map(|s| (*s).into()).collect();
+    ui.set_browse_platforms(ModelRc::new(VecModel::from(platforms)));
+    ui.set_browse_platform(app.browse_platform as i32);
+    ui.set_browse_game_id(app.browse_game().as_str().into());
+    ui.set_browse_needs_key(app.source() == Source::Modio);
     let bmods: Vec<BrowseMod> = app
         .browse_mods
         .iter()
-        .map(|m| BrowseMod {
-            id: m.mod_id as i32,
-            name: m.name.as_str().into(),
-            author: m.author.as_str().into(),
-            summary: m.summary.as_str().into(),
+        .map(|m| {
+            let summary = if m.downloads > 0 {
+                format!("{}  ·  {} downloads", m.summary, m.downloads)
+            } else {
+                m.summary.clone()
+            };
+            BrowseMod {
+                id: m.id.as_str().into(),
+                name: m.name.as_str().into(),
+                author: m.author.as_str().into(),
+                summary: summary.into(),
+            }
         })
         .collect();
     ui.set_browse_mods(ModelRc::new(VecModel::from(bmods)));
@@ -337,15 +481,9 @@ fn refresh(ui: &MainWindow, app: &App) {
         .browse_files
         .iter()
         .map(|f| BrowseFile {
-            id: f.file_id as i32,
+            id: f.id.as_str().into(),
             name: f.name.as_str().into(),
-            info: format!(
-                "v{}  ·  {} MB  ·  {}",
-                f.version,
-                f.size_kb / 1024,
-                f.category_name.clone().unwrap_or_default()
-            )
-            .into(),
+            info: format!("v{}  ·  {}", f.version, human_size(f.size)).into(),
         })
         .collect();
     ui.set_browse_files(ModelRc::new(VecModel::from(bfiles)));
@@ -515,7 +653,7 @@ fn spawn_nxm_download(tx: Sender<Bg>, key: String, cache: PathBuf, link_str: Str
             Ok(_) => {
                 let _ = tx.send(Bg::Downloaded {
                     path: dest,
-                    domain: link.domain,
+                    switch: Some(link.domain),
                     nexus: Some((link.mod_id, link.file_id, String::new())),
                 });
             }
@@ -558,13 +696,31 @@ fn spawn_update_check(tx: Sender<Bg>, key: String, mods: Vec<(String, NexusRef)>
     });
 }
 
-/// Worker: fetch a curated mod list for a game.
-fn spawn_browse_list(tx: Sender<Bg>, key: String, domain: String, kind: ModList) {
+fn sort_to_modlist(sort: ListSort) -> ModList {
+    match sort {
+        ListSort::Top => ModList::Trending,
+        ListSort::Newest => ModList::LatestAdded,
+        ListSort::Updated => ModList::LatestUpdated,
+    }
+}
+
+// ---- Nexus browse workers (emit source-agnostic results) ----
+
+fn spawn_nexus_list(tx: Sender<Bg>, key: String, domain: String, sort: ListSort) {
     std::thread::spawn(move || {
-        match NexusClient::new(key).and_then(|c| c.mod_list(&domain, kind)) {
+        match NexusClient::new(key).and_then(|c| c.mod_list(&domain, sort_to_modlist(sort))) {
             Ok(mods) => {
-                let _ = tx.send(Bg::BrowseMsg(format!("{} mods.", mods.len())));
-                let _ = tx.send(Bg::BrowseMods(mods));
+                let entries = mods
+                    .into_iter()
+                    .map(|m| BrowseEntry {
+                        id: m.mod_id.to_string(),
+                        name: m.name,
+                        author: m.author,
+                        summary: m.summary,
+                        downloads: 0,
+                    })
+                    .collect();
+                let _ = tx.send(Bg::BrowseList(entries));
             }
             Err(e) => {
                 let _ = tx.send(Bg::BrowseMsg(format!("List failed: {e}")));
@@ -573,8 +729,7 @@ fn spawn_browse_list(tx: Sender<Bg>, key: String, domain: String, kind: ModList)
     });
 }
 
-/// Worker: fetch a mod's name + downloadable files.
-fn spawn_browse_files(tx: Sender<Bg>, key: String, domain: String, mod_id: u64) {
+fn spawn_nexus_files(tx: Sender<Bg>, key: String, domain: String, mod_id: u64) {
     std::thread::spawn(move || {
         let client = match NexusClient::new(key) {
             Ok(c) => c,
@@ -589,10 +744,17 @@ fn spawn_browse_files(tx: Sender<Bg>, key: String, domain: String, mod_id: u64) 
             .unwrap_or_default();
         match client.files(&domain, mod_id) {
             Ok(files) => {
-                let _ = tx.send(Bg::BrowseFiles {
-                    mod_name: name,
-                    files,
-                });
+                let files = files
+                    .into_iter()
+                    .map(|f| BrowseFileEntry {
+                        id: f.file_id.to_string(),
+                        name: f.name,
+                        version: f.version,
+                        size: f.size_kb * 1024,
+                        url: None, // Nexus: resolved at download time (premium).
+                    })
+                    .collect();
+                let _ = tx.send(Bg::BrowseFileList { title: name, files });
             }
             Err(e) => {
                 let _ = tx.send(Bg::BrowseMsg(format!("Files failed: {e}")));
@@ -601,8 +763,7 @@ fn spawn_browse_files(tx: Sender<Bg>, key: String, domain: String, mod_id: u64) 
     });
 }
 
-/// Worker: download a browsed file (premium accounts only via the API).
-fn spawn_browse_download(
+fn spawn_nexus_download(
     tx: Sender<Bg>,
     key: String,
     cache: PathBuf,
@@ -622,14 +783,14 @@ fn spawn_browse_download(
             Ok(mut links) if !links.is_empty() => links.remove(0),
             Ok(_) => {
                 let _ = tx.send(Bg::BrowseMsg(
-                    "No links — free accounts must use the site's Mod Manager Download button."
+                    "No links — free Nexus accounts must use the site's Mod Manager Download button."
                         .into(),
                 ));
                 return;
             }
             Err(e) => {
                 let _ = tx.send(Bg::BrowseMsg(format!(
-                    "Download needs Nexus Premium (or use the nxm button): {e}"
+                    "In-app download needs Nexus Premium (or use the nxm button): {e}"
                 )));
                 return;
             }
@@ -642,10 +803,101 @@ fn spawn_browse_download(
             Ok(_) => {
                 let _ = tx.send(Bg::Downloaded {
                     path: dest,
-                    domain,
+                    switch: Some(domain),
                     nexus: Some((mod_id, file_id, String::new())),
                 });
-                let _ = tx.send(Bg::BrowseMsg("Downloaded — installing…".into()));
+            }
+            Err(e) => {
+                let _ = tx.send(Bg::BrowseMsg(format!("Download failed: {e}")));
+            }
+        }
+    });
+}
+
+// ---- Free-platform browse workers (Thunderstore / mod.io / GameBanana) ----
+
+fn spawn_pl_list(tx: Sender<Bg>, src: Source, modio_key: String, game: String, sort: ListSort) {
+    std::thread::spawn(move || {
+        let pl = match make_platform(src, &modio_key) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = tx.send(Bg::BrowseMsg(e));
+                return;
+            }
+        };
+        match pl.list(&game, sort) {
+            Ok(mods) => {
+                let entries = mods
+                    .into_iter()
+                    .map(|m| BrowseEntry {
+                        id: m.id,
+                        name: m.name,
+                        author: m.author,
+                        summary: m.summary,
+                        downloads: m.downloads,
+                    })
+                    .collect();
+                let _ = tx.send(Bg::BrowseList(entries));
+            }
+            Err(e) => {
+                let _ = tx.send(Bg::BrowseMsg(format!("List failed: {e}")));
+            }
+        }
+    });
+}
+
+fn spawn_pl_files(tx: Sender<Bg>, src: Source, modio_key: String, game: String, mod_id: String) {
+    std::thread::spawn(move || {
+        let pl = match make_platform(src, &modio_key) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = tx.send(Bg::BrowseMsg(e));
+                return;
+            }
+        };
+        match pl.files(&game, &mod_id) {
+            Ok(files) => {
+                let files = files
+                    .into_iter()
+                    .map(|f| BrowseFileEntry {
+                        id: f.id,
+                        name: f.name,
+                        version: f.version,
+                        size: f.size,
+                        url: Some(f.url),
+                    })
+                    .collect();
+                let _ = tx.send(Bg::BrowseFileList {
+                    title: mod_id,
+                    files,
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(Bg::BrowseMsg(format!("Files failed: {e}")));
+            }
+        }
+    });
+}
+
+fn spawn_pl_download(tx: Sender<Bg>, src: Source, modio_key: String, cache: PathBuf, url: String) {
+    std::thread::spawn(move || {
+        let pl = match make_platform(src, &modio_key) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = tx.send(Bg::BrowseMsg(e));
+                return;
+            }
+        };
+        let filename = filename_from_uri(&url).unwrap_or_else(|| "download.zip".into());
+        let dest = cache.join(&filename);
+        let _ = tx.send(Bg::BrowseMsg(format!("Downloading {filename}…")));
+        match pl.download(&url, &dest, &mut |_, _| {}) {
+            Ok(_) => {
+                let _ = tx.send(Bg::Downloaded {
+                    path: dest,
+                    switch: None,
+                    nexus: None,
+                });
             }
             Err(e) => {
                 let _ = tx.send(Bg::BrowseMsg(format!("Download failed: {e}")));
@@ -671,18 +923,26 @@ fn handle_bg(app: &Rc<RefCell<App>>, msg: Bg) {
         Bg::NexusStatus(s) => a.nexus_status = s,
         Bg::Downloaded {
             path,
-            domain,
+            switch,
             nexus,
         } => {
-            if !a.open_game_by_domain(&domain) {
-                a.nexus_status = format!("Downloaded, but '{domain}' is not installed/detected.");
+            // Nexus downloads may target another game; switch to it. Platform
+            // downloads install into the currently-open game.
+            if let Some(domain) = &switch {
+                if !a.open_game_by_domain(domain) {
+                    a.browse_status = format!("Downloaded, but '{domain}' is not detected.");
+                    return;
+                }
+            }
+            if a.manager.is_none() {
+                a.browse_status = "Downloaded, but no game is open to install into.".into();
                 return;
             }
             let outcome = a.manager.as_mut().map(|mgr| mgr.install_archive(&path));
             match outcome {
                 Some(Ok(InstallOutcome::Installed(rec))) => {
-                    if let (Some((mod_id, file_id, version)), Some(mgr)) =
-                        (nexus, a.manager.as_mut())
+                    if let (Some((mod_id, file_id, version)), Some(domain), Some(mgr)) =
+                        (nexus, switch.as_ref(), a.manager.as_mut())
                     {
                         let _ = mgr.set_nexus_ref(
                             &rec.slug,
@@ -694,7 +954,7 @@ fn handle_bg(app: &Rc<RefCell<App>>, msg: Bg) {
                             },
                         );
                     }
-                    a.nexus_status = format!("Installed '{}' from Nexus.", rec.name);
+                    a.browse_status = format!("Installed '{}'.", rec.name);
                 }
                 Some(Ok(InstallOutcome::NeedsFomod {
                     slug,
@@ -702,17 +962,20 @@ fn handle_bg(app: &Rc<RefCell<App>>, msg: Bg) {
                     config,
                     src_root,
                 })) => {
-                    a.nexus_status = format!("Configure '{name}' (FOMOD).");
+                    a.browse_status = format!("Configure '{name}' (FOMOD).");
                     a.start_wizard(slug, *config, src_root);
                 }
-                Some(Err(e)) => a.nexus_status = format!("Install failed: {e}"),
+                Some(Err(e)) => a.browse_status = format!("Install failed: {e}"),
                 None => {}
             }
             let _ = std::fs::remove_file(&path);
         }
-        Bg::BrowseMods(v) => a.browse_mods = v,
-        Bg::BrowseFiles { mod_name, files } => {
-            a.browse_title = format!("Browse — {mod_name}");
+        Bg::BrowseList(v) => {
+            a.browse_status = format!("{} mods.", v.len());
+            a.browse_mods = v;
+        }
+        Bg::BrowseFileList { title, files } => {
+            a.browse_title = format!("Browse — {title}");
             a.browse_status = format!("{} file(s).", files.len());
             a.browse_files = files;
         }
@@ -950,15 +1213,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     on!(on_browse_open_cb, |a| {
         a.browse_open = true;
-        match (a.nexus_domain(), a.api_key.is_empty()) {
-            (Some(domain), false) => {
-                a.browse_title = format!("Browse — {domain}");
-                a.browse_status = "Loading trending…".into();
-                spawn_browse_list(a.tx.clone(), a.api_key.clone(), domain, ModList::Trending);
-            }
-            (None, _) => a.browse_status = "This game has no Nexus domain.".into(),
-            (_, true) => a.browse_status = "Set a Nexus API key first.".into(),
-        }
+        a.trigger_list(ListSort::Top);
     });
     on!(on_check_updates, |a| {
         match (a.nexus_domain().is_some(), a.api_key.is_empty()) {
@@ -983,38 +1238,63 @@ fn main() -> Result<(), slint::PlatformError> {
         a.browse_open = false;
     });
     on!(on_browse_list, |a, kind: i32| {
-        if let (Some(domain), false) = (a.nexus_domain(), a.api_key.is_empty()) {
-            let k = match kind {
-                1 => ModList::LatestAdded,
-                2 => ModList::LatestUpdated,
-                _ => ModList::Trending,
-            };
-            a.browse_status = "Loading…".into();
-            spawn_browse_list(a.tx.clone(), a.api_key.clone(), domain, k);
-        }
+        let sort = match kind {
+            1 => ListSort::Newest,
+            2 => ListSort::Updated,
+            _ => ListSort::Top,
+        };
+        a.trigger_list(sort);
     });
-    on!(on_browse_mod, |a, id: i32| {
-        if let (Some(domain), false) = (a.nexus_domain(), a.api_key.is_empty()) {
-            a.browse_sel_mod = Some(id as u64);
-            a.browse_status = "Loading files…".into();
-            spawn_browse_files(a.tx.clone(), a.api_key.clone(), domain, id as u64);
-        }
+    on!(on_browse_mod, |a, id: SharedString| {
+        a.trigger_files(id.to_string());
     });
-    on!(on_browse_download, |a, file_id: i32| {
-        match (a.nexus_domain(), a.browse_sel_mod, a.api_key.is_empty()) {
-            (Some(domain), Some(mod_id), false) => {
-                let cache = a.cache_dir();
-                a.browse_status = "Resolving download…".into();
-                spawn_browse_download(
-                    a.tx.clone(),
-                    a.api_key.clone(),
-                    cache,
-                    domain,
-                    mod_id,
-                    file_id as u64,
-                );
+    on!(on_browse_set_platform, |a, idx: i32| {
+        a.browse_platform = idx.max(0) as usize;
+        a.browse_mods.clear();
+        a.browse_files.clear();
+        a.browse_status = format!("Source: {}", Source::labels()[a.browse_platform.min(3)]);
+    });
+    on!(on_browse_set_game_id, |a, t: SharedString| {
+        a.browse_game_id = t.trim().to_string();
+    });
+    on!(on_browse_set_key, |a, t: SharedString| {
+        a.save_modio_key(&t);
+    });
+    on!(on_browse_download, |a, file_id: SharedString| {
+        let fid = file_id.to_string();
+        let entry = a.browse_files.iter().find(|f| f.id == fid).cloned();
+        let Some(entry) = entry else { return };
+        let cache = a.cache_dir();
+        match a.source() {
+            Source::Nexus => {
+                let domain = a.nexus_domain();
+                let mod_id = a
+                    .browse_sel_mod
+                    .as_ref()
+                    .and_then(|s| s.parse::<u64>().ok());
+                let fid_u = fid.parse::<u64>().ok();
+                if let (Some(domain), Some(mod_id), Some(fid_u), false) =
+                    (domain, mod_id, fid_u, a.api_key.is_empty())
+                {
+                    a.browse_status = "Resolving download…".into();
+                    spawn_nexus_download(
+                        a.tx.clone(),
+                        a.api_key.clone(),
+                        cache,
+                        domain,
+                        mod_id,
+                        fid_u,
+                    );
+                } else {
+                    a.browse_status = "Pick a mod first (and set API key).".into();
+                }
             }
-            _ => a.browse_status = "Pick a mod first (and set API key).".into(),
+            src => {
+                if let Some(url) = entry.url {
+                    a.browse_status = "Downloading…".into();
+                    spawn_pl_download(a.tx.clone(), src, a.modio_key.clone(), cache, url);
+                }
+            }
         }
     });
 

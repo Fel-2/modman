@@ -30,14 +30,14 @@ export struct FomodGroup {
 }
 
 export struct BrowseMod {
-    id: int,
+    id: string,
     name: string,
     author: string,
     summary: string,
 }
 
 export struct BrowseFile {
-    id: int,
+    id: string,
     name: string,
     info: string,
 }
@@ -70,6 +70,10 @@ export component MainWindow inherits Window {
     in property <[BrowseFile]> browse-files;
     in property <string> browse-title: "Browse";
     in property <string> browse-status;
+    in property <[string]> browse-platforms;
+    in property <int> browse-platform;
+    in property <string> browse-game-id;
+    in property <bool> browse-needs-key;
 
     in property <bool> fomod-active;
     in property <string> fomod-module;
@@ -101,8 +105,11 @@ export component MainWindow inherits Window {
     callback browse-open-cb();
     callback browse-close();
     callback browse-list(int);
-    callback browse-mod(int);
-    callback browse-download(int);
+    callback browse-mod(string);
+    callback browse-download(string);
+    callback browse-set-platform(int);
+    callback browse-set-game-id(string);
+    callback browse-set-key(string);
     callback fomod-toggle(int, int, bool);
     callback fomod-select(int, int);
     callback check-updates();
@@ -312,10 +319,32 @@ export component MainWindow inherits Window {
                     HorizontalBox {
                         spacing: 8px;
                         Text { text: browse-title; font-size: 16px; horizontal-stretch: 1; vertical-alignment: center; }
-                        Button { text: "Trending"; clicked => { root.browse-list(0); } }
-                        Button { text: "Latest"; clicked => { root.browse-list(1); } }
+                        Button { text: "Top"; clicked => { root.browse-list(0); } }
+                        Button { text: "Newest"; clicked => { root.browse-list(1); } }
                         Button { text: "Updated"; clicked => { root.browse-list(2); } }
                         Button { text: "Close"; clicked => { root.browse-close(); } }
+                    }
+                    HorizontalBox {
+                        spacing: 8px;
+                        Text { text: "Source:"; vertical-alignment: center; color: #999; }
+                        ComboBox {
+                            model: browse-platforms;
+                            current-index: browse-platform;
+                            min-width: 130px;
+                            selected(v) => { root.browse-set-platform(self.current-index); }
+                        }
+                        LineEdit {
+                            placeholder-text: "game id / community slug";
+                            text: browse-game-id;
+                            horizontal-stretch: 1;
+                            edited(t) => { root.browse-set-game-id(t); }
+                        }
+                        LineEdit {
+                            visible: browse-needs-key;
+                            placeholder-text: "mod.io API key";
+                            edited(t) => { root.browse-set-key(t); }
+                            min-width: 160px;
+                        }
                     }
                     HorizontalLayout {
                         spacing: 10px;

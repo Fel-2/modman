@@ -2959,6 +2959,7 @@ version = "0.1.0"
 dependencies = [
  "modeman-core",
  "modeman-nexus",
+ "modeman-platform",
  "rfd",
  "slint",
  "slint-build",
@@ -2976,6 +2977,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "modeman-platform"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 modeman-core = { path = "../core" }
 modeman-nexus = { path = "../nexus" }
+modeman-platform = { path = "../platform" }
 slint = "1.8"
 rfd = "0.15"
 tracing.workspace = true
