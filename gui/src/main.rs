@@ -184,11 +184,22 @@ impl App {
         Source::from_index(self.browse_platform)
     }
 
-    /// The game id/slug to query for the current source.
+    /// The game id/slug to query for the current source. Manual entry wins;
+    /// otherwise fall back to the catalog's known id for this platform.
     fn browse_game(&self) -> String {
         match self.source() {
             Source::Nexus => self.nexus_domain().unwrap_or_default(),
-            _ => self.browse_game_id.clone(),
+            _ if !self.browse_game_id.is_empty() => self.browse_game_id.clone(),
+            Source::GameBanana => self
+                .manager
+                .as_ref()
+                .map(|m| m.game().spec.gamebanana_id)
+                .filter(|&id| id != 0)
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            // Thunderstore/mod.io catalogs don't overlap our built-in games;
+            // ids/slugs stay manual there.
+            _ => String::new(),
         }
     }
 
@@ -879,7 +890,14 @@ fn spawn_pl_files(tx: Sender<Bg>, src: Source, modio_key: String, game: String, 
     });
 }
 
-fn spawn_pl_download(tx: Sender<Bg>, src: Source, modio_key: String, cache: PathBuf, url: String) {
+fn spawn_pl_download(
+    tx: Sender<Bg>,
+    src: Source,
+    modio_key: String,
+    cache: PathBuf,
+    url: String,
+    file_name: String,
+) {
     std::thread::spawn(move || {
         let pl = match make_platform(src, &modio_key) {
             Ok(p) => p,
@@ -888,7 +906,14 @@ fn spawn_pl_download(tx: Sender<Bg>, src: Source, modio_key: String, cache: Path
                 return;
             }
         };
-        let filename = filename_from_uri(&url).unwrap_or_else(|| "download.zip".into());
+        // Prefer the platform's declared filename — some download URLs
+        // (GameBanana `/dl/<id>`) carry no extension, which would break
+        // archive-type detection at install.
+        let filename = if file_name.contains('.') {
+            file_name
+        } else {
+            filename_from_uri(&url).unwrap_or_else(|| "download.zip".into())
+        };
         let dest = cache.join(&filename);
         let _ = tx.send(Bg::BrowseMsg(format!("Downloading {filename}…")));
         match pl.download(&url, &dest, &mut |_, _| {}) {
@@ -1252,7 +1277,8 @@ fn main() -> Result<(), slint::PlatformError> {
         a.browse_platform = idx.max(0) as usize;
         a.browse_mods.clear();
         a.browse_files.clear();
-        a.browse_status = format!("Source: {}", Source::labels()[a.browse_platform.min(3)]);
+        a.browse_game_id.clear(); // re-derive from catalog for the new source
+        a.trigger_list(ListSort::Top);
     });
     on!(on_browse_set_game_id, |a, t: SharedString| {
         a.browse_game_id = t.trim().to_string();
@@ -1292,7 +1318,14 @@ fn main() -> Result<(), slint::PlatformError> {
             src => {
                 if let Some(url) = entry.url {
                     a.browse_status = "Downloading…".into();
-                    spawn_pl_download(a.tx.clone(), src, a.modio_key.clone(), cache, url);
+                    spawn_pl_download(
+                        a.tx.clone(),
+                        src,
+                        a.modio_key.clone(),
+                        cache,
+                        url,
+                        entry.name.clone(),
+                    );
                 }
             }
         }

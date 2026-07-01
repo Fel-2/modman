@@ -32,8 +32,12 @@ struct Version {
 
 #[derive(Debug, Deserialize)]
 struct PackageDetail {
+    /// The experimental endpoint returns only `latest`; some responses may
+    /// carry a `versions` list — accept both.
     #[serde(default)]
     versions: Vec<DetailVersion>,
+    #[serde(default)]
+    latest: Option<DetailVersion>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,8 +45,9 @@ struct DetailVersion {
     full_name: String,
     version_number: String,
     download_url: String,
+    /// Explicitly `null` on the experimental endpoint.
     #[serde(default)]
-    file_size: u64,
+    file_size: Option<u64>,
 }
 
 pub struct Thunderstore {
@@ -94,15 +99,19 @@ impl ModPlatform for Thunderstore {
             .ok_or_else(|| Error::Other(format!("bad thunderstore id: {mod_id}")))?;
         let url = format!("{BASE}/api/experimental/package/{ns}/{name}/");
         let detail: PackageDetail = self.get_json(&url)?;
-        Ok(detail
-            .versions
+        let versions = if detail.versions.is_empty() {
+            detail.latest.into_iter().collect()
+        } else {
+            detail.versions
+        };
+        Ok(versions
             .into_iter()
             .map(|v| RemoteFile {
                 id: v.version_number.clone(),
-                name: v.full_name,
+                name: format!("{}.zip", v.full_name),
                 version: v.version_number,
                 url: v.download_url,
-                size: v.file_size,
+                size: v.file_size.unwrap_or(0),
             })
             .collect())
     }

@@ -28,6 +28,8 @@ pub struct GameSpec {
     /// Nexus Mods domain slug (used in API paths and `nxm://` links).
     /// Empty if the game is not on Nexus.
     pub nexus_domain: &'static str,
+    /// GameBanana numeric game id (0 if not on GameBanana).
+    pub gamebanana_id: u32,
 }
 
 /// Where a game's deployed mods live.
@@ -78,6 +80,7 @@ pub const CATALOG: &[GameSpec] = &[
         "Skyrim Special Edition",
         LoadOrderKind::PluginsTxt,
         "skyrimspecialedition",
+        4724,
     ),
     use_gamedir(
         "skyrim",
@@ -89,6 +92,7 @@ pub const CATALOG: &[GameSpec] = &[
         "Skyrim",
         LoadOrderKind::PluginsTxt,
         "skyrim",
+        4724,
     ),
     use_gamedir(
         "fallout4",
@@ -100,6 +104,7 @@ pub const CATALOG: &[GameSpec] = &[
         "Fallout4",
         LoadOrderKind::PluginsTxt,
         "fallout4",
+        5518,
     ),
     use_gamedir(
         "falloutnv",
@@ -111,6 +116,7 @@ pub const CATALOG: &[GameSpec] = &[
         "FalloutNV",
         LoadOrderKind::PluginsTxt,
         "newvegas",
+        0,
     ),
     use_gamedir(
         "fallout3",
@@ -122,6 +128,7 @@ pub const CATALOG: &[GameSpec] = &[
         "Fallout3",
         LoadOrderKind::PluginsTxt,
         "fallout3",
+        0,
     ),
     use_gamedir(
         "oblivion",
@@ -133,6 +140,7 @@ pub const CATALOG: &[GameSpec] = &[
         "Oblivion",
         LoadOrderKind::PluginsTxt,
         "oblivion",
+        827,
     ),
     use_gamedir(
         "morrowind",
@@ -144,6 +152,7 @@ pub const CATALOG: &[GameSpec] = &[
         "",
         LoadOrderKind::MorrowindIni,
         "morrowind",
+        1446,
     ),
     use_gamedir(
         "starfield",
@@ -155,6 +164,7 @@ pub const CATALOG: &[GameSpec] = &[
         "Starfield",
         LoadOrderKind::PluginsTxt,
         "starfield",
+        19063,
     ),
     use_gamedir(
         "cyberpunk",
@@ -166,6 +176,7 @@ pub const CATALOG: &[GameSpec] = &[
         "",
         LoadOrderKind::None,
         "cyberpunk2077",
+        8722,
     ),
     // Folder-per-mod games — wrapper folder is the mod, do not flatten.
     use_gamedir(
@@ -178,6 +189,7 @@ pub const CATALOG: &[GameSpec] = &[
         "",
         LoadOrderKind::None,
         "rimworld",
+        6762,
     ),
     use_gamedir(
         "stardew",
@@ -189,6 +201,7 @@ pub const CATALOG: &[GameSpec] = &[
         "",
         LoadOrderKind::None,
         "stardewvalley",
+        5937,
     ),
     // Generic Unity / BepInEx — manual-add (no fixed appid).
     use_gamedir(
@@ -201,6 +214,7 @@ pub const CATALOG: &[GameSpec] = &[
         "",
         LoadOrderKind::None,
         "",
+        0,
     ),
     // Paradox — mods deploy to Documents/.../mod inside the prefix.
     GameSpec {
@@ -213,6 +227,7 @@ pub const CATALOG: &[GameSpec] = &[
         appdata: "",
         load_order: LoadOrderKind::None,
         nexus_domain: "crusaderkings3",
+        gamebanana_id: 22600,
     },
     GameSpec {
         id: "ck2",
@@ -224,6 +239,7 @@ pub const CATALOG: &[GameSpec] = &[
         appdata: "",
         load_order: LoadOrderKind::None,
         nexus_domain: "crusaderkings2",
+        gamebanana_id: 0,
     },
 ];
 
@@ -239,6 +255,7 @@ const fn use_gamedir(
     appdata: &'static str,
     load_order: LoadOrderKind,
     nexus_domain: &'static str,
+    gamebanana_id: u32,
 ) -> GameSpec {
     GameSpec {
         id,
@@ -250,6 +267,7 @@ const fn use_gamedir(
         appdata,
         load_order,
         nexus_domain,
+        gamebanana_id,
     }
 }
 
