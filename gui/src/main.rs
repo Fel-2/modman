@@ -109,6 +109,8 @@ struct Wizard {
     src_root: PathBuf,
     /// Currently focused plugin (group, plugin) for the preview pane.
     sel: Option<(usize, usize)>,
+    /// Nexus origin to attach once the install finishes (update checks).
+    nexus: Option<NexusRef>,
 }
 
 /// Mutable app state shared across UI callbacks.
@@ -133,6 +135,8 @@ struct App {
     browse_platform: usize,
     browse_game_id: String,
     modio_key: String,
+    addgame_open: bool,
+    addgame_path: Option<PathBuf>,
 }
 
 impl App {
@@ -168,6 +172,8 @@ impl App {
             browse_platform: 0,
             browse_game_id: String::new(),
             modio_key,
+            addgame_open: false,
+            addgame_path: None,
         }
     }
 
@@ -197,8 +203,15 @@ impl App {
                 .filter(|&id| id != 0)
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
-            // Thunderstore/mod.io catalogs don't overlap our built-in games;
-            // ids/slugs stay manual there.
+            Source::Thunderstore => self
+                .manager
+                .as_ref()
+                .map(|m| m.game().spec.thunderstore_slug)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .unwrap_or_default(),
+            // mod.io's catalog doesn't overlap our built-in games; ids stay
+            // manual there.
             _ => String::new(),
         }
     }
@@ -226,6 +239,25 @@ impl App {
                 spawn_nexus_list(self.tx.clone(), self.api_key.clone(), game, sort);
             }
             src => spawn_pl_list(self.tx.clone(), src, self.modio_key.clone(), game, sort),
+        }
+    }
+
+    /// Kick off a keyword search for the current source + game.
+    fn trigger_search(&mut self, query: String) {
+        if query.is_empty() {
+            self.trigger_list(ListSort::Top);
+            return;
+        }
+        let game = self.browse_game();
+        if game.is_empty() {
+            self.browse_status = "Enter a game id / community slug for this source.".into();
+            return;
+        }
+        self.browse_status = format!("Searching '{query}'…");
+        match self.source() {
+            // v2 search needs no API key (files/downloads still do).
+            Source::Nexus => spawn_nexus_search(self.tx.clone(), self.api_key.clone(), game, query),
+            src => spawn_pl_search(self.tx.clone(), src, self.modio_key.clone(), game, query),
         }
     }
 
@@ -262,6 +294,12 @@ impl App {
     /// Detect installed games; open the first (or keep current if still present).
     fn rescan(&mut self) {
         self.games = game::detect_all();
+        // Merge manually-registered installs (non-Steam / undetected).
+        for g in game::manual_games(&self.data_root) {
+            if self.games.iter().all(|d| d.path != g.path) {
+                self.games.push(g);
+            }
+        }
         if self.games.is_empty() {
             self.current = None;
             self.manager = None;
@@ -314,7 +352,13 @@ impl App {
     }
 
     /// Begin a FOMOD wizard for a freshly staged install.
-    fn start_wizard(&mut self, slug: String, config: FomodConfig, src_root: PathBuf) {
+    fn start_wizard(
+        &mut self,
+        slug: String,
+        config: FomodConfig,
+        src_root: PathBuf,
+        nexus: Option<NexusRef>,
+    ) {
         let selections = config.default_selections();
         self.wizard = Some(Wizard {
             slug,
@@ -323,6 +367,7 @@ impl App {
             step: 0,
             src_root,
             sel: None,
+            nexus,
         });
     }
 
@@ -388,7 +433,12 @@ impl App {
         let Some(w) = self.wizard.take() else { return };
         if let Some(mgr) = self.manager.as_mut() {
             match mgr.finish_fomod(&w.slug, &w.selections) {
-                Ok(rec) => self.status = format!("Installed '{}' (FOMOD).", rec.name),
+                Ok(rec) => {
+                    if let Some(nx) = w.nexus {
+                        let _ = mgr.set_nexus_ref(&rec.slug, nx);
+                    }
+                    self.status = format!("Installed '{}' (FOMOD).", rec.name);
+                }
                 Err(e) => self.status = format!("FOMOD install failed: {e}"),
             }
         }
@@ -447,6 +497,19 @@ fn refresh(ui: &MainWindow, app: &App) {
     ui.set_status(app.status.as_str().into());
     ui.set_api_key(app.api_key.as_str().into());
     ui.set_nexus_status(app.nexus_status.as_str().into());
+
+    // Add-game overlay.
+    ui.set_addgame_open(app.addgame_open);
+    ui.set_addgame_path(
+        app.addgame_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+            .as_str()
+            .into(),
+    );
+    let catalog: Vec<SharedString> = game::CATALOG.iter().map(|s| s.name.into()).collect();
+    ui.set_catalog_names(ModelRc::new(VecModel::from(catalog)));
 
     // Conflicts overlay.
     let crows: Vec<ConflictRow> = app
@@ -740,6 +803,36 @@ fn spawn_nexus_list(tx: Sender<Bg>, key: String, domain: String, sort: ListSort)
     });
 }
 
+fn spawn_nexus_search(tx: Sender<Bg>, key: String, domain: String, query: String) {
+    std::thread::spawn(move || {
+        // Search itself is anonymous; a placeholder key keeps the client
+        // constructible when the user hasn't signed in yet.
+        let key = if key.is_empty() {
+            "anonymous".into()
+        } else {
+            key
+        };
+        match NexusClient::new(key).and_then(|c| c.search(&domain, &query)) {
+            Ok(mods) => {
+                let entries = mods
+                    .into_iter()
+                    .map(|m| BrowseEntry {
+                        id: m.mod_id.to_string(),
+                        name: m.name,
+                        author: m.author,
+                        summary: m.summary,
+                        downloads: 0,
+                    })
+                    .collect();
+                let _ = tx.send(Bg::BrowseList(entries));
+            }
+            Err(e) => {
+                let _ = tx.send(Bg::BrowseMsg(format!("Search failed: {e}")));
+            }
+        }
+    });
+}
+
 fn spawn_nexus_files(tx: Sender<Bg>, key: String, domain: String, mod_id: u64) {
     std::thread::spawn(move || {
         let client = match NexusClient::new(key) {
@@ -810,7 +903,15 @@ fn spawn_nexus_download(
             filename_from_uri(&dl.uri).unwrap_or_else(|| format!("{mod_id}-{file_id}.archive"));
         let dest = cache.join(&filename);
         let _ = tx.send(Bg::BrowseMsg(format!("Downloading {filename}…")));
-        match client.download_to(&dl.uri, &dest, |_, _| {}) {
+        let tx2 = tx.clone();
+        let fname = filename.clone();
+        let mut last = 0u64;
+        match client.download_to(&dl.uri, &dest, move |done, total| {
+            if done.saturating_sub(last) >= 1 << 20 {
+                last = done;
+                let _ = tx2.send(Bg::BrowseMsg(progress_line(&fname, done, total)));
+            }
+        }) {
             Ok(_) => {
                 let _ = tx.send(Bg::Downloaded {
                     path: dest,
@@ -852,6 +953,36 @@ fn spawn_pl_list(tx: Sender<Bg>, src: Source, modio_key: String, game: String, s
             }
             Err(e) => {
                 let _ = tx.send(Bg::BrowseMsg(format!("List failed: {e}")));
+            }
+        }
+    });
+}
+
+fn spawn_pl_search(tx: Sender<Bg>, src: Source, modio_key: String, game: String, query: String) {
+    std::thread::spawn(move || {
+        let pl = match make_platform(src, &modio_key) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = tx.send(Bg::BrowseMsg(e));
+                return;
+            }
+        };
+        match pl.search(&game, &query) {
+            Ok(mods) => {
+                let entries = mods
+                    .into_iter()
+                    .map(|m| BrowseEntry {
+                        id: m.id,
+                        name: m.name,
+                        author: m.author,
+                        summary: m.summary,
+                        downloads: m.downloads,
+                    })
+                    .collect();
+                let _ = tx.send(Bg::BrowseList(entries));
+            }
+            Err(e) => {
+                let _ = tx.send(Bg::BrowseMsg(format!("Search failed: {e}")));
             }
         }
     });
@@ -916,7 +1047,15 @@ fn spawn_pl_download(
         };
         let dest = cache.join(&filename);
         let _ = tx.send(Bg::BrowseMsg(format!("Downloading {filename}…")));
-        match pl.download(&url, &dest, &mut |_, _| {}) {
+        let tx2 = tx.clone();
+        let fname = filename.clone();
+        let mut last = 0u64;
+        match pl.download(&url, &dest, &mut move |done, total| {
+            if done.saturating_sub(last) >= 1 << 20 {
+                last = done;
+                let _ = tx2.send(Bg::BrowseMsg(progress_line(&fname, done, total)));
+            }
+        }) {
             Ok(_) => {
                 let _ = tx.send(Bg::Downloaded {
                     path: dest,
@@ -929,6 +1068,18 @@ fn spawn_pl_download(
             }
         }
     });
+}
+
+/// "name… (12.3 MB / 45%)" download progress line.
+fn progress_line(name: &str, done: u64, total: Option<u64>) -> String {
+    match total {
+        Some(t) if t > 0 => format!(
+            "Downloading {name}… ({} / {}%)",
+            human_size(done),
+            done * 100 / t
+        ),
+        _ => format!("Downloading {name}… ({})", human_size(done)),
+    }
 }
 
 fn filename_from_uri(uri: &str) -> Option<String> {
@@ -963,23 +1114,42 @@ fn handle_bg(app: &Rc<RefCell<App>>, msg: Bg) {
                 a.browse_status = "Downloaded, but no game is open to install into.".into();
                 return;
             }
-            let outcome = a.manager.as_mut().map(|mgr| mgr.install_archive(&path));
+            // Same Nexus mod already installed → in-place update (keeps the
+            // load-order slot and enabled state) instead of a duplicate.
+            let nexus_ref = nexus.as_ref().zip(switch.as_ref()).map(
+                |(&(mod_id, file_id, ref version), domain)| NexusRef {
+                    domain: domain.clone(),
+                    mod_id,
+                    file_id,
+                    version: version.clone(),
+                },
+            );
+            let reuse = nexus_ref.as_ref().and_then(|nx| {
+                a.manager.as_ref().and_then(|m| {
+                    m.mods()
+                        .iter()
+                        .find(|r| {
+                            r.nexus
+                                .as_ref()
+                                .is_some_and(|n| n.domain == nx.domain && n.mod_id == nx.mod_id)
+                        })
+                        .map(|r| r.slug.clone())
+                })
+            });
+            let outcome = a.manager.as_mut().map(|mgr| match reuse.as_deref() {
+                Some(slug) => mgr.update_archive(slug, &path),
+                None => mgr.install_archive(&path),
+            });
             match outcome {
                 Some(Ok(InstallOutcome::Installed(rec))) => {
-                    if let (Some((mod_id, file_id, version)), Some(domain), Some(mgr)) =
-                        (nexus, switch.as_ref(), a.manager.as_mut())
-                    {
-                        let _ = mgr.set_nexus_ref(
-                            &rec.slug,
-                            NexusRef {
-                                domain: domain.clone(),
-                                mod_id,
-                                file_id,
-                                version,
-                            },
-                        );
+                    if let (Some(nx), Some(mgr)) = (nexus_ref, a.manager.as_mut()) {
+                        let _ = mgr.set_nexus_ref(&rec.slug, nx);
                     }
-                    a.browse_status = format!("Installed '{}'.", rec.name);
+                    a.browse_status = if reuse.is_some() {
+                        format!("Updated '{}' in place.", rec.name)
+                    } else {
+                        format!("Installed '{}'.", rec.name)
+                    };
                 }
                 Some(Ok(InstallOutcome::NeedsFomod {
                     slug,
@@ -988,7 +1158,7 @@ fn handle_bg(app: &Rc<RefCell<App>>, msg: Bg) {
                     src_root,
                 })) => {
                     a.browse_status = format!("Configure '{name}' (FOMOD).");
-                    a.start_wizard(slug, *config, src_root);
+                    a.start_wizard(slug, *config, src_root, nexus_ref);
                 }
                 Some(Err(e)) => a.browse_status = format!("Install failed: {e}"),
                 None => {}
@@ -1088,6 +1258,42 @@ fn main() -> Result<(), slint::PlatformError> {
         a.open_game(idx.max(0) as usize);
     });
 
+    on!(on_addgame_open_cb, |a| {
+        a.addgame_open = true;
+    });
+    on!(on_addgame_close, |a| {
+        a.addgame_open = false;
+    });
+    on!(on_addgame_pick, |a| {
+        if let Some(p) = rfd::FileDialog::new()
+            .set_title("Select the game's install folder")
+            .pick_folder()
+        {
+            a.addgame_path = Some(p);
+        }
+    });
+    on!(on_addgame_confirm, |a, idx: i32| {
+        let Some(path) = a.addgame_path.clone() else {
+            a.status = "Pick the install folder first.".into();
+            return;
+        };
+        let Some(spec) = game::CATALOG.get(idx.max(0) as usize) else {
+            return;
+        };
+        match game::add_manual_game(&a.data_root, spec.id, path) {
+            Ok(g) => {
+                a.addgame_open = false;
+                a.addgame_path = None;
+                a.rescan();
+                if let Some(i) = a.games.iter().position(|x| x.path == g.path) {
+                    a.open_game(i);
+                }
+                a.status = format!("Added {} at {}.", g.spec.name, g.path.display());
+            }
+            Err(e) => a.status = format!("Add game failed: {e}"),
+        }
+    });
+
     on!(on_select_profile, |a, idx: i32| {
         let names = a
             .manager
@@ -1141,7 +1347,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 src_root,
             }) => {
                 a.status = format!("Configure '{name}' (FOMOD).");
-                a.start_wizard(slug, *config, src_root);
+                a.start_wizard(slug, *config, src_root, None);
             }
             Err(e) => a.status = format!("Install failed: {e}"),
         }
@@ -1180,7 +1386,9 @@ fn main() -> Result<(), slint::PlatformError> {
         let i = idx.max(0) as usize;
         if let Some(mgr) = a.manager.as_mut() {
             if i > 0 {
-                let _ = mgr.move_mod(i, i - 1);
+                if let Err(e) = mgr.move_mod(i, i - 1) {
+                    a.status = format!("Reorder failed: {e}");
+                }
             }
         }
     });
@@ -1188,7 +1396,9 @@ fn main() -> Result<(), slint::PlatformError> {
     on!(on_move_down, |a, idx: i32| {
         let i = idx.max(0) as usize;
         if let Some(mgr) = a.manager.as_mut() {
-            let _ = mgr.move_mod(i, i + 1);
+            if let Err(e) = mgr.move_mod(i, i + 1) {
+                a.status = format!("Reorder failed: {e}");
+            }
         }
     });
 
@@ -1282,6 +1492,9 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     on!(on_browse_set_game_id, |a, t: SharedString| {
         a.browse_game_id = t.trim().to_string();
+    });
+    on!(on_browse_search, |a, q: SharedString| {
+        a.trigger_search(q.trim().to_string());
     });
     on!(on_browse_set_key, |a, t: SharedString| {
         a.save_modio_key(&t);

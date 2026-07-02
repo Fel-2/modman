@@ -12,6 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 
 const API_BASE: &str = "https://api.nexusmods.com/v1";
+const V2_GRAPHQL: &str = "https://api.nexusmods.com/v2/graphql";
 const USER_AGENT: &str = concat!("modeman/", env!("CARGO_PKG_VERSION"), " (+linux)");
 
 #[derive(Debug, Clone, Deserialize)]
@@ -136,6 +137,94 @@ impl NexusClient {
             "{API_BASE}/games/{domain}/mods/{}.json",
             kind.path()
         ))
+    }
+
+    /// Keyword search via the v2 GraphQL API (v1 has no search). Sorted by
+    /// total downloads. Works without authentication.
+    pub fn search(&self, domain: &str, query: &str) -> Result<Vec<ModInfo>> {
+        #[derive(Deserialize)]
+        struct Uploader {
+            #[serde(default)]
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct Node {
+            #[serde(rename = "modId")]
+            mod_id: u64,
+            name: String,
+            #[serde(default)]
+            summary: String,
+            #[serde(default)]
+            version: String,
+            #[serde(default)]
+            author: String,
+            #[serde(default)]
+            uploader: Option<Uploader>,
+        }
+        #[derive(Deserialize)]
+        struct Mods {
+            nodes: Vec<Node>,
+        }
+        #[derive(Deserialize)]
+        struct Data {
+            mods: Mods,
+        }
+        #[derive(Deserialize)]
+        struct GqlError {
+            message: String,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            data: Option<Data>,
+            #[serde(default)]
+            errors: Vec<GqlError>,
+        }
+
+        let body = serde_json::json!({
+            "query": "query($filter: ModsFilter, $count: Int, $sort: [ModsSort!]) {\
+                mods(filter: $filter, count: $count, sort: $sort) {\
+                    nodes { modId name summary version author uploader { name } } } }",
+            "variables": {
+                "count": 50,
+                "sort": [{ "downloads": { "direction": "DESC" } }],
+                "filter": {
+                    "gameDomainName": [{ "value": domain, "op": "EQUALS" }],
+                    "name": [{ "value": query, "op": "WILDCARD" }]
+                }
+            }
+        });
+        // No auth header: v2 GraphQL accepts anonymous queries, and it
+        // rejects v1 personal API keys (it wants OAuth JWTs instead).
+        let resp = self.http.post(V2_GRAPHQL).json(&body).send()?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                body: resp.text().unwrap_or_default(),
+            });
+        }
+        let parsed: Resp = resp.json()?;
+        if let Some(e) = parsed.errors.first() {
+            return Err(Error::Other(format!("graphql: {}", e.message)));
+        }
+        Ok(parsed
+            .data
+            .map(|d| d.mods.nodes)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| ModInfo {
+                mod_id: n.mod_id,
+                name: n.name,
+                summary: n.summary,
+                version: n.version,
+                author: if n.author.is_empty() {
+                    n.uploader.map(|u| u.name).unwrap_or_default()
+                } else {
+                    n.author
+                },
+                picture_url: None,
+            })
+            .collect())
     }
 
     pub fn files(&self, domain: &str, mod_id: u64) -> Result<Vec<ModFile>> {

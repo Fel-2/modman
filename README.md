@@ -26,6 +26,15 @@ Cyberpunk 2077. Designed around Proton/Steam realities on Linux.
       per-game flatten policy (folder-per-mod vs loose-file)
 - [x] Load-order writers — RimWorld `ModsConfig.xml`, Paradox `dlc_load.json`
 - [x] VFS launch wrapper + Cyberpunk REDmod — experimental, real-machine only
+- [x] Keyword search across all sources — Nexus (v2 GraphQL, works without a
+      key), mod.io + GameBanana (server-side), Thunderstore (full-list filter)
+- [x] In-place mod updates — re-downloading a Nexus mod you already have
+      replaces it, keeping its load-order slot, enabled state, and profiles
+- [x] Master-aware plugin sort — plugin headers are parsed for `MAST` entries
+      and dependents are ordered after their masters at deploy time
+- [x] Deployment hygiene — removing or updating a mod while deployed refreshes
+      the live links (no dangling symlinks, vanilla files restored)
+- [x] Manual game registration — "Add game…" for GOG/Heroic/custom installs
 
 ### Supported games
 
@@ -37,6 +46,10 @@ Cyberpunk 2077. Designed around Proton/Steam realities on Linux.
 | Stardew Valley (SMAPI) | folder-per-mod | `Mods/` | ✅ |
 | Crusader Kings II / III | Paradox | prefix `Documents/.../mod/` | ✅ |
 | Generic Unity (BepInEx) | Unity | `BepInEx/plugins/` | manual path |
+
+Anything not auto-detected (GOG, Heroic, a custom Unity/BepInEx game) can be
+registered via **Add game…** — pick the catalog entry and the install folder;
+the registration persists in `manual-games.json` under the data dir.
 
 Load-order writers ship for: Creation Engine (`plugins.txt`), RimWorld
 (`ModsConfig.xml`, by `packageId`), Paradox (`dlc_load.json`, by `.mod`
@@ -128,10 +141,12 @@ fully free, from:
 - **GameBanana** — `gamebanana.com`, no auth. Game = numeric game id. Large
   catalog incl. Cyberpunk.
 
-In the **Browse** overlay pick a source, enter the game id/slug, then
-Top/Newest/Updated → a mod → Download. The downloaded archive flows through the
-normal install pipeline (FOMOD wizard fires if scripted). Game ids/slugs are
-entered manually for now (platform catalogs differ from the Nexus domains).
+In the **Browse** overlay pick a source, then Top/Newest/Updated or type a
+keyword search → a mod → Download. The downloaded archive flows through the
+normal install pipeline (FOMOD wizard fires if scripted). Game ids/slugs
+auto-fill from the catalog where known (GameBanana ids for most games,
+Thunderstore's `cyberpunk2077`); mod.io ids are entered manually — its catalog
+doesn't overlap the built-in games.
 
 The `platform` crate holds one `ModPlatform` trait with a provider each.
 
@@ -166,9 +181,13 @@ These ship but can't be validated headless — try them on a real install:
       (conservative; backs up the DB)
 - [x] UI polish — mod sizes, FOMOD option images/descriptions, Nexus update
       check (newer-file detection), GitHub Actions CI (fmt + clippy + tests)
+- [x] Keyword search — Nexus v2 GraphQL + per-platform search, one search box
+- [x] In-place updates, master-aware plugin sorting, deploy-safe remove/update
+- [x] Manual game registration ("Add game…", persisted)
 - [ ] More games / engines as needed
 - [ ] Overlayfs/VFS deploy backend (game dir untouched)
-- [ ] GOG / Heroic / Lutris detection
+- [ ] GOG / Heroic / Lutris auto-detection
+- [ ] Packaging: AppImage / Flatpak / AUR
 
 ## License
 

@@ -75,6 +75,10 @@ export component MainWindow inherits Window {
     in property <string> browse-game-id;
     in property <bool> browse-needs-key;
 
+    in property <bool> addgame-open;
+    in property <[string]> catalog-names;
+    in property <string> addgame-path;
+
     in property <bool> fomod-active;
     in property <string> fomod-module;
     in property <string> fomod-step-name;
@@ -110,6 +114,11 @@ export component MainWindow inherits Window {
     callback browse-set-platform(int);
     callback browse-set-game-id(string);
     callback browse-set-key(string);
+    callback browse-search(string);
+    callback addgame-open-cb();
+    callback addgame-close();
+    callback addgame-pick();
+    callback addgame-confirm(int);
     callback fomod-toggle(int, int, bool);
     callback fomod-select(int, int);
     callback check-updates();
@@ -121,6 +130,7 @@ export component MainWindow inherits Window {
     property <string> new-profile-name;
     property <string> key-input: api-key;
     property <string> nxm-input;
+    property <string> browse-query;
 
     Rectangle {
         // ===== main layout =====
@@ -138,6 +148,7 @@ export component MainWindow inherits Window {
                     horizontal-stretch: 1;
                 }
                 Button { text: "Rescan"; clicked => { root.rescan(); } }
+                Button { text: "Add game…"; clicked => { root.addgame-open-cb(); } }
                 Text { text: "Profile:"; vertical-alignment: center; }
                 ComboBox {
                     model: profiles;
@@ -345,6 +356,13 @@ export component MainWindow inherits Window {
                             edited(t) => { root.browse-set-key(t); }
                             min-width: 160px;
                         }
+                        LineEdit {
+                            placeholder-text: "search mods…";
+                            min-width: 160px;
+                            edited(t) => { root.browse-query = t; }
+                            accepted(t) => { root.browse-search(t); }
+                        }
+                        Button { text: "Search"; clicked => { root.browse-search(root.browse-query); } }
                     }
                     HorizontalLayout {
                         spacing: 10px;
@@ -391,6 +409,62 @@ export component MainWindow inherits Window {
                         }
                     }
                     Text { text: browse-status; font-size: 11px; color: #8ab4f8; wrap: word-wrap; }
+                }
+            }
+        }
+
+        // ===== add-game overlay =====
+        if addgame-open : Rectangle {
+            background: #000000aa;
+            TouchArea {}
+            Rectangle {
+                width: 60%;
+                height: 260px;
+                background: #1e1e1e;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #444;
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 10px;
+                    Text { text: "Add a game manually"; font-size: 16px; }
+                    Text {
+                        text: "For installs modeman can't auto-detect (GOG, Heroic, custom Unity/BepInEx games).";
+                        color: #999;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                    HorizontalBox {
+                        spacing: 8px;
+                        Text { text: "Game:"; vertical-alignment: center; }
+                        addgame-combo := ComboBox {
+                            model: catalog-names;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    HorizontalBox {
+                        spacing: 8px;
+                        Text { text: "Folder:"; vertical-alignment: center; }
+                        Text {
+                            text: addgame-path == "" ? "— not selected —" : addgame-path;
+                            vertical-alignment: center;
+                            color: addgame-path == "" ? #888 : #ddd;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        Button { text: "Choose folder…"; clicked => { root.addgame-pick(); } }
+                    }
+                    HorizontalBox {
+                        spacing: 8px;
+                        Rectangle { horizontal-stretch: 1; }
+                        Button { text: "Cancel"; clicked => { root.addgame-close(); } }
+                        Button {
+                            text: "Add";
+                            primary: true;
+                            enabled: addgame-path != "";
+                            clicked => { root.addgame-confirm(addgame-combo.current-index); }
+                        }
+                    }
                 }
             }
         }

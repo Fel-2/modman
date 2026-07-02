@@ -115,17 +115,20 @@ impl ModPlatform for Modio {
         };
         let url = format!("{BASE}/games/{game}/mods?_limit=100&_sort={sort_q}");
         let resp: ModsResponse = self.get_json(&url)?;
-        Ok(resp
-            .data
-            .into_iter()
-            .map(|m| ListedMod {
-                id: m.id.to_string(),
-                name: m.name,
-                author: m.submitted_by.map(|s| s.username).unwrap_or_default(),
-                summary: m.summary,
-                downloads: m.stats.map(|s| s.downloads_total).unwrap_or(0),
-            })
-            .collect())
+        Ok(mods_to_listed(resp))
+    }
+
+    /// Server-side fulltext search (`_q`).
+    fn search(&self, game: &str, query: &str) -> Result<Vec<ListedMod>> {
+        if game.is_empty() {
+            return Err(Error::GameUnsupported(NAME));
+        }
+        let url = format!(
+            "{BASE}/games/{game}/mods?_limit=100&_q={}",
+            crate::urlencode(query)
+        );
+        let resp: ModsResponse = self.get_json(&url)?;
+        Ok(mods_to_listed(resp))
     }
 
     fn files(&self, game: &str, mod_id: &str) -> Result<Vec<RemoteFile>> {
@@ -153,6 +156,19 @@ impl ModPlatform for Modio {
     ) -> Result<()> {
         stream_to(&self.http, NAME, url, dest, progress)
     }
+}
+
+fn mods_to_listed(resp: ModsResponse) -> Vec<ListedMod> {
+    resp.data
+        .into_iter()
+        .map(|m| ListedMod {
+            id: m.id.to_string(),
+            name: m.name,
+            author: m.submitted_by.map(|s| s.username).unwrap_or_default(),
+            summary: m.summary,
+            downloads: m.stats.map(|s| s.downloads_total).unwrap_or(0),
+        })
+        .collect()
 }
 
 #[cfg(test)]

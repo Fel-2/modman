@@ -61,12 +61,36 @@ pub struct RemoteFile {
     pub size: u64,
 }
 
+/// Minimal percent-encoding for URL query values.
+pub(crate) fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// A browsable, downloadable mod source.
 pub trait ModPlatform {
     /// Stable platform name, e.g. "thunderstore".
     fn name(&self) -> &'static str;
     /// Browse mods for a platform-specific `game` slug/id.
     fn list(&self, game: &str, sort: ListSort) -> Result<Vec<ListedMod>>;
+    /// Keyword search. Default: fetch the Top listing and filter client-side;
+    /// platforms with server-side search override this.
+    fn search(&self, game: &str, query: &str) -> Result<Vec<ListedMod>> {
+        let q = query.to_lowercase();
+        Ok(self
+            .list(game, ListSort::Top)?
+            .into_iter()
+            .filter(|m| m.name.to_lowercase().contains(&q) || m.summary.to_lowercase().contains(&q))
+            .collect())
+    }
     /// Downloadable files for a mod.
     fn files(&self, game: &str, mod_id: &str) -> Result<Vec<RemoteFile>>;
     /// Stream a file to `dest`.

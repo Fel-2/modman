@@ -101,18 +101,20 @@ impl ModPlatform for GameBanana {
         // Subfeed returns the game's recent submissions across models.
         let url = format!("{BASE}/Game/{game}/Subfeed?_nPage=1");
         let feed: Subfeed = self.get_json(&url)?;
-        Ok(feed
-            .records
-            .into_iter()
-            .filter(|r| r.model.is_empty() || r.model == "Mod")
-            .map(|r| ListedMod {
-                id: r.id.to_string(),
-                name: r.name,
-                author: r.submitter.map(|s| s.name).unwrap_or_default(),
-                summary: r.text,
-                downloads: r.views,
-            })
-            .collect())
+        Ok(records_to_listed(feed.records))
+    }
+
+    /// Server-side search (live-verified: `Util/Search/Results`).
+    fn search(&self, game: &str, query: &str) -> Result<Vec<ListedMod>> {
+        if game.is_empty() {
+            return Err(Error::GameUnsupported(NAME));
+        }
+        let url = format!(
+            "{BASE}/Util/Search/Results?_sModelName=Mod&_sOrder=best_match&_idGameRow={game}&_sSearchString={}",
+            crate::urlencode(query)
+        );
+        let feed: Subfeed = self.get_json(&url)?;
+        Ok(records_to_listed(feed.records))
     }
 
     fn files(&self, _game: &str, mod_id: &str) -> Result<Vec<RemoteFile>> {
@@ -139,6 +141,20 @@ impl ModPlatform for GameBanana {
     ) -> Result<()> {
         stream_to(&self.http, NAME, url, dest, progress)
     }
+}
+
+fn records_to_listed(records: Vec<Record>) -> Vec<ListedMod> {
+    records
+        .into_iter()
+        .filter(|r| r.model.is_empty() || r.model == "Mod")
+        .map(|r| ListedMod {
+            id: r.id.to_string(),
+            name: r.name,
+            author: r.submitter.map(|s| s.name).unwrap_or_default(),
+            summary: r.text,
+            downloads: r.views,
+        })
+        .collect()
 }
 
 #[cfg(test)]

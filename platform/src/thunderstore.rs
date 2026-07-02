@@ -75,6 +75,15 @@ impl Thunderstore {
         }
         Ok(resp.json()?)
     }
+
+    /// The community's full package list.
+    fn fetch_packages(&self, game: &str) -> Result<Vec<Package>> {
+        if game.is_empty() {
+            return Err(Error::GameUnsupported(NAME));
+        }
+        let url = format!("{BASE}/c/{game}/api/v1/package/");
+        self.get_json(&url)
+    }
 }
 
 impl ModPlatform for Thunderstore {
@@ -83,13 +92,28 @@ impl ModPlatform for Thunderstore {
     }
 
     fn list(&self, game: &str, sort: ListSort) -> Result<Vec<ListedMod>> {
-        if game.is_empty() {
-            return Err(Error::GameUnsupported(NAME));
-        }
-        let url = format!("{BASE}/c/{game}/api/v1/package/");
-        let mut packages: Vec<Package> = self.get_json(&url)?;
+        let mut packages = self.fetch_packages(game)?;
         sort_packages(&mut packages, sort);
         Ok(packages.iter().take(100).map(to_listed).collect())
+    }
+
+    /// Server has no search API; filter the full community package list
+    /// (list() truncates to 100, which would hide matches).
+    fn search(&self, game: &str, query: &str) -> Result<Vec<ListedMod>> {
+        let q = query.to_lowercase();
+        let mut packages = self.fetch_packages(game)?;
+        sort_packages(&mut packages, ListSort::Top);
+        Ok(packages
+            .iter()
+            .filter(|p| {
+                p.name.to_lowercase().contains(&q)
+                    || p.versions
+                        .first()
+                        .is_some_and(|v| v.description.to_lowercase().contains(&q))
+            })
+            .take(100)
+            .map(to_listed)
+            .collect())
     }
 
     fn files(&self, _game: &str, mod_id: &str) -> Result<Vec<RemoteFile>> {

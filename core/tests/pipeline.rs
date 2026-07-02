@@ -247,6 +247,152 @@ fn paradox_writes_dlc_load() {
 }
 
 #[test]
+fn remove_while_deployed_leaves_no_dangling_links() {
+    let data_root = tmp("data-rm");
+    let lib = tmp("lib-rm");
+
+    let game_dir = lib.join("steamapps/common/SkyrimSE");
+    // Vanilla file that mod A will shadow.
+    let vanilla = game_dir.join("Data/Textures/wall.dds");
+    fs::create_dir_all(vanilla.parent().unwrap()).unwrap();
+    fs::write(&vanilla, b"VANILLA").unwrap();
+
+    // Mod A shadows the vanilla texture; mod B ships its own file.
+    let src_a = tmp("modsrc-rm-a");
+    fs::create_dir_all(src_a.join("Textures")).unwrap();
+    fs::write(src_a.join("Textures/wall.dds"), b"MOD-A").unwrap();
+    let arc_a = tmp("arc-rm-a").join("shadow.tar");
+    make_tar(&src_a, &arc_a);
+
+    let src_b = tmp("modsrc-rm-b");
+    fs::create_dir_all(src_b.join("meshes")).unwrap();
+    fs::write(src_b.join("meshes/chair.nif"), b"MOD-B").unwrap();
+    let arc_b = tmp("arc-rm-b").join("chair.tar");
+    make_tar(&src_b, &arc_b);
+
+    let installed = game::from_manual_path("skyrimse", game_dir.clone()).unwrap();
+    let mut mgr = Manager::open(data_root, installed).unwrap();
+    let rec_a = match mgr.install_archive(&arc_a).unwrap() {
+        modeman_core::manager::InstallOutcome::Installed(r) => r,
+        _ => panic!("plain archive"),
+    };
+    let _ = mgr.install_archive(&arc_b).unwrap();
+    mgr.deploy().unwrap();
+    assert_eq!(fs::read(&vanilla).unwrap(), b"MOD-A");
+
+    // Remove mod A while deployed: its link must go, the vanilla file must
+    // come back, and mod B must stay live.
+    mgr.remove_mod(&rec_a.slug).unwrap();
+    assert!(mgr.is_deployed(), "deployment stays live after remove");
+    assert!(!vanilla.is_symlink(), "removed mod's link is gone");
+    assert_eq!(fs::read(&vanilla).unwrap(), b"VANILLA", "vanilla restored");
+    let b_file = game_dir.join("Data/meshes/chair.nif");
+    assert!(b_file.is_symlink(), "other mod still deployed");
+    assert_eq!(fs::read(&b_file).unwrap(), b"MOD-B");
+
+    // Nothing under the deploy root may dangle.
+    for entry in walk_files(&game_dir.join("Data")) {
+        assert!(
+            entry.exists(),
+            "dangling link left behind: {}",
+            entry.display()
+        );
+    }
+}
+
+/// All paths (files + symlinks) under a dir.
+fn walk_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(rd) = fs::read_dir(root) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() && !p.is_symlink() {
+            out.extend(walk_files(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
+#[test]
+fn update_archive_keeps_slot_and_refreshes_content() {
+    use modeman_core::NexusRef;
+
+    let data_root = tmp("data-up");
+    let lib = tmp("lib-up");
+
+    let game_dir = lib.join("steamapps/common/SkyrimSE");
+    fs::create_dir_all(&game_dir).unwrap();
+
+    // v1 of the mod, plus a second mod so order matters.
+    let src_v1 = tmp("modsrc-up-v1");
+    fs::create_dir_all(src_v1.join("Textures")).unwrap();
+    fs::write(src_v1.join("Textures/old.dds"), b"v1").unwrap();
+    let arc_v1 = tmp("arc-up-v1").join("coolmod.tar");
+    make_tar(&src_v1, &arc_v1);
+
+    let src_other = tmp("modsrc-up-o");
+    fs::create_dir_all(src_other.join("meshes")).unwrap();
+    fs::write(src_other.join("meshes/x.nif"), b"other").unwrap();
+    let arc_other = tmp("arc-up-o").join("other.tar");
+    make_tar(&src_other, &arc_other);
+
+    let installed = game::from_manual_path("skyrimse", game_dir.clone()).unwrap();
+    let mut mgr = Manager::open(data_root, installed).unwrap();
+    let rec = match mgr.install_archive(&arc_v1).unwrap() {
+        modeman_core::manager::InstallOutcome::Installed(r) => r,
+        _ => panic!("plain archive"),
+    };
+    let _ = mgr.install_archive(&arc_other).unwrap();
+    mgr.set_nexus_ref(
+        &rec.slug,
+        NexusRef {
+            domain: "skyrimspecialedition".into(),
+            mod_id: 42,
+            file_id: 1,
+            version: "1.0".into(),
+        },
+    )
+    .unwrap();
+    mgr.set_enabled(&rec.slug, false).unwrap();
+    mgr.deploy().unwrap();
+
+    // v2 replaces the old texture with a new file.
+    let src_v2 = tmp("modsrc-up-v2");
+    fs::create_dir_all(src_v2.join("Textures")).unwrap();
+    fs::write(src_v2.join("Textures/new.dds"), b"v2").unwrap();
+    let arc_v2 = tmp("arc-up-v2").join("coolmod-v2.tar");
+    make_tar(&src_v2, &arc_v2);
+
+    let updated = match mgr.update_archive(&rec.slug, &arc_v2).unwrap() {
+        modeman_core::manager::InstallOutcome::Installed(r) => r,
+        _ => panic!("plain archive"),
+    };
+    assert_eq!(updated.slug, rec.slug, "slug is stable across updates");
+    assert_eq!(mgr.mods().len(), 2, "no duplicate record");
+
+    // Load-order slot and enabled state survive; Nexus ref carried over.
+    let prof = mgr.active_profile();
+    assert_eq!(prof.order[0].slug, rec.slug, "position preserved");
+    assert!(!prof.order[0].enabled, "enabled state preserved");
+    let stored = mgr.mods().iter().find(|m| m.slug == rec.slug).unwrap();
+    assert_eq!(stored.nexus.as_ref().unwrap().mod_id, 42);
+
+    // Store content swapped to v2.
+    let mod_dir = stored.dir(mgr.store_dir());
+    assert!(!mod_dir.join("Textures/old.dds").exists(), "v1 file gone");
+    assert_eq!(fs::read(mod_dir.join("Textures/new.dds")).unwrap(), b"v2");
+
+    // Live deployment was refreshed (mod disabled → nothing dangles).
+    for entry in walk_files(&game_dir.join("Data")) {
+        assert!(entry.exists(), "dangling link: {}", entry.display());
+    }
+}
+
+#[test]
 fn hardlink_method_deploys_real_files() {
     use modeman_core::deploy::LinkMethod;
 

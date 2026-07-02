@@ -30,6 +30,8 @@ pub struct GameSpec {
     pub nexus_domain: &'static str,
     /// GameBanana numeric game id (0 if not on GameBanana).
     pub gamebanana_id: u32,
+    /// Thunderstore community slug (empty if not on Thunderstore).
+    pub thunderstore_slug: &'static str,
 }
 
 /// Where a game's deployed mods live.
@@ -166,17 +168,21 @@ pub const CATALOG: &[GameSpec] = &[
         "starfield",
         19063,
     ),
-    use_gamedir(
-        "cyberpunk",
-        "Cyberpunk 2077",
-        1091500,
-        "",
-        true,
-        Engine::Cyberpunk,
-        "",
-        LoadOrderKind::None,
+    with_thunderstore(
+        use_gamedir(
+            "cyberpunk",
+            "Cyberpunk 2077",
+            1091500,
+            "",
+            true,
+            Engine::Cyberpunk,
+            "",
+            LoadOrderKind::None,
+            "cyberpunk2077",
+            8722,
+        ),
+        // Live-verified community slug (thunderstore.io/c/cyberpunk2077).
         "cyberpunk2077",
-        8722,
     ),
     // Folder-per-mod games — wrapper folder is the mod, do not flatten.
     use_gamedir(
@@ -228,6 +234,7 @@ pub const CATALOG: &[GameSpec] = &[
         load_order: LoadOrderKind::None,
         nexus_domain: "crusaderkings3",
         gamebanana_id: 22600,
+        thunderstore_slug: "",
     },
     GameSpec {
         id: "ck2",
@@ -240,6 +247,7 @@ pub const CATALOG: &[GameSpec] = &[
         load_order: LoadOrderKind::None,
         nexus_domain: "crusaderkings2",
         gamebanana_id: 0,
+        thunderstore_slug: "",
     },
 ];
 
@@ -268,6 +276,16 @@ const fn use_gamedir(
         load_order,
         nexus_domain,
         gamebanana_id,
+        thunderstore_slug: "",
+    }
+}
+
+/// Same as [`use_gamedir`] but with a Thunderstore community slug.
+#[allow(clippy::too_many_arguments)]
+const fn with_thunderstore(base: GameSpec, slug: &'static str) -> GameSpec {
+    GameSpec {
+        thunderstore_slug: slug,
+        ..base
     }
 }
 
@@ -465,4 +483,60 @@ pub fn from_manual_path(id: &str, path: PathBuf) -> Result<InstalledGame> {
         )));
     }
     Ok(InstalledGame { spec, path })
+}
+
+// ---- manually registered installs (non-Steam / undetected) ----------------
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ManualEntry {
+    id: String,
+    path: PathBuf,
+}
+
+fn manual_games_path(data_root: &Path) -> PathBuf {
+    data_root.join("manual-games.json")
+}
+
+fn load_manual_entries(data_root: &Path) -> Vec<ManualEntry> {
+    std::fs::read_to_string(manual_games_path(data_root))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_manual_entries(data_root: &Path, entries: &[ManualEntry]) -> Result<()> {
+    std::fs::create_dir_all(data_root).map_err(|e| crate::Error::io(data_root, e))?;
+    let path = manual_games_path(data_root);
+    let json = serde_json::to_string_pretty(entries)?;
+    std::fs::write(&path, json).map_err(|e| crate::Error::io(&path, e))
+}
+
+/// Manually registered installs (`<data_root>/manual-games.json`), skipping
+/// entries whose directory no longer exists.
+pub fn manual_games(data_root: &Path) -> Vec<InstalledGame> {
+    load_manual_entries(data_root)
+        .into_iter()
+        .filter_map(|e| from_manual_path(&e.id, e.path).ok())
+        .collect()
+}
+
+/// Validate and persist a manual install; returns the registered game.
+/// Re-registering the same path updates its game id.
+pub fn add_manual_game(data_root: &Path, id: &str, path: PathBuf) -> Result<InstalledGame> {
+    let game = from_manual_path(id, path)?;
+    let mut entries = load_manual_entries(data_root);
+    entries.retain(|e| e.path != game.path);
+    entries.push(ManualEntry {
+        id: id.to_string(),
+        path: game.path.clone(),
+    });
+    save_manual_entries(data_root, &entries)?;
+    Ok(game)
+}
+
+/// Drop a manual registration by install path. No-op if not registered.
+pub fn remove_manual_game(data_root: &Path, path: &Path) -> Result<()> {
+    let mut entries = load_manual_entries(data_root);
+    entries.retain(|e| e.path != path);
+    save_manual_entries(data_root, &entries)
 }

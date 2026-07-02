@@ -200,7 +200,27 @@ impl Manager {
     /// return `Installed`; FOMOD installers return `NeedsFomod` and stay staged
     /// until [`finish_fomod`](Self::finish_fomod) (or [`cancel_fomod`]).
     pub fn install_archive(&mut self, archive_path: &Path) -> Result<InstallOutcome> {
-        let staged = store::extract_staging(&self.store_dir, archive_path, &self.state.mods)?;
+        self.install_archive_impl(archive_path, None)
+    }
+
+    /// Reinstall a new archive over an existing mod (in-place update): keeps
+    /// the slug, so every profile's load-order position and enabled state are
+    /// preserved. The record's name/source/size are refreshed; a Nexus ref is
+    /// carried over unless the caller sets a new one afterwards.
+    pub fn update_archive(&mut self, slug: &str, archive_path: &Path) -> Result<InstallOutcome> {
+        if !self.state.mods.iter().any(|m| m.slug == slug) {
+            return Err(Error::ModNotFound(slug.to_string()));
+        }
+        self.install_archive_impl(archive_path, Some(slug))
+    }
+
+    fn install_archive_impl(
+        &mut self,
+        archive_path: &Path,
+        reuse_slug: Option<&str>,
+    ) -> Result<InstallOutcome> {
+        let staged =
+            store::extract_staging(&self.store_dir, archive_path, &self.state.mods, reuse_slug)?;
         let source = store::source_label(archive_path);
 
         if let Some((cfg_path, src_root)) = fomod::find_config(&staged.dir) {
@@ -277,11 +297,29 @@ impl Manager {
     }
 
     fn register_record(&mut self, record: ModRecord) -> Result<()> {
-        self.state.mods.push(record.clone());
+        let slug = record.slug.clone();
+        let updated =
+            if let Some(existing) = self.state.mods.iter_mut().find(|m| m.slug == record.slug) {
+                // In-place update: refresh metadata but keep the Nexus origin
+                // unless the new record brings its own.
+                let nexus = record.nexus.clone().or_else(|| existing.nexus.take());
+                *existing = ModRecord { nexus, ..record };
+                true
+            } else {
+                self.state.mods.push(record);
+                false
+            };
         for p in &mut self.state.profiles {
-            p.ensure(&record.slug);
+            p.ensure(&slug);
         }
-        self.save()
+        self.save()?;
+        // An updated mod's old files are gone from the store; refresh the
+        // live links so nothing dangles. Fresh installs stay undeployed
+        // until the user deploys explicitly.
+        if updated && self.is_deployed() {
+            self.deploy()?;
+        }
+        Ok(())
     }
 
     /// Attach Nexus origin metadata to a mod (for later update checks).
@@ -368,7 +406,8 @@ impl Manager {
         conflict::detect(&sources)
     }
 
-    /// Remove a mod from the store and all profiles.
+    /// Remove a mod from the store and all profiles. If a deployment is live,
+    /// it is refreshed so the removed mod's links don't dangle.
     pub fn remove_mod(&mut self, slug: &str) -> Result<()> {
         let idx = self
             .state
@@ -381,7 +420,11 @@ impl Manager {
         for p in &mut self.state.profiles {
             p.remove(slug);
         }
-        self.save()
+        self.save()?;
+        if self.is_deployed() {
+            self.deploy()?;
+        }
+        Ok(())
     }
 
     pub fn set_enabled(&mut self, slug: &str, enabled: bool) -> Result<()> {
@@ -425,7 +468,7 @@ impl Manager {
 
         // Activate Creation Engine plugins so the game actually loads them.
         if self.game.spec.load_order == LoadOrderKind::PluginsTxt {
-            let active = self.active_plugins_in_order(&slugs);
+            let active = self.sort_plugins_by_masters(self.active_plugins_in_order(&slugs), &slugs);
             let managed = self.all_managed_plugins();
             if let Err(e) = plugins::write_plugins_txt(&self.game, &active, &managed) {
                 tracing::warn!("plugins.txt update failed: {e}");
@@ -556,6 +599,27 @@ impl Manager {
             }
         }
         out
+    }
+
+    /// Reorder active plugins so masters load before their dependents
+    /// (LOOT-lite: header MAST parse, stable within that constraint).
+    fn sort_plugins_by_masters(&self, active: Vec<String>, slugs: &[String]) -> Vec<String> {
+        let mut masters: HashMap<String, Vec<String>> = HashMap::new();
+        for slug in slugs {
+            let Some(rec) = self.state.mods.iter().find(|m| &m.slug == slug) else {
+                continue;
+            };
+            let dir = rec.dir(&self.store_dir);
+            for name in plugins::plugins_in(&dir) {
+                masters.entry(name.to_ascii_lowercase()).or_insert_with(|| {
+                    plugins::masters_of(&dir.join(&name))
+                        .into_iter()
+                        .map(|m| m.to_ascii_lowercase())
+                        .collect()
+                });
+            }
+        }
+        plugins::sort_by_masters(&active, &masters)
     }
 
     /// Every plugin filename modeman controls across all installed mods.

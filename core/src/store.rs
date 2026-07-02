@@ -98,10 +98,14 @@ pub struct Staged {
 /// Extract an archive into `<store>/.staging/<slug>` without flattening, so a
 /// scripted installer can read the raw tree. Use [`finalize_direct`] for plain
 /// archives, or run a FOMOD session into the final dir.
+///
+/// `reuse_slug` reinstalls over an existing mod (in-place update) instead of
+/// allocating a fresh slug.
 pub fn extract_staging(
     game_store: &Path,
     archive_path: &Path,
     existing: &[ModRecord],
+    reuse_slug: Option<&str>,
 ) -> Result<Staged> {
     if !archive::is_supported(archive_path) {
         return Err(Error::Archive(format!(
@@ -114,7 +118,10 @@ pub fn extract_staging(
         .and_then(|s| s.to_str())
         .unwrap_or("mod")
         .to_string();
-    let slug = unique_slug(existing, &slugify(&name));
+    let slug = match reuse_slug {
+        Some(s) => s.to_string(),
+        None => unique_slug(existing, &slugify(&name)),
+    };
 
     let dir = game_store.join(".staging").join(&slug);
     if dir.exists() {
