@@ -124,6 +124,17 @@ impl Manager {
         if self.state.deploy_method == method {
             return Ok(());
         }
+        if method == LinkMethod::Overlay
+            && matches!(
+                self.game.spec.deploy,
+                crate::game::DeployTarget::PrefixDocs(_)
+            )
+        {
+            return Err(Error::other(
+                "overlay deploy needs an in-place game dir; this game deploys \
+                 into the Proton prefix's Documents",
+            ));
+        }
         let was_deployed = self.is_deployed();
         if was_deployed {
             self.clear()?;
@@ -463,7 +474,19 @@ impl Manager {
             }
         }
 
-        let manifest = self.deployer.deploy(&sources, &target)?;
+        let manifest = if self.state.deploy_method == LinkMethod::Overlay {
+            // Overlay: nothing touches the game dir — the bwrap launch wrapper
+            // (see `vfs_launch_option`) mounts the mods at game start. Only
+            // make sure the writable overlay layer exists and record the
+            // (empty) deploy so load-order files below are still written.
+            let overlay = crate::vfs::OverlayDirs::under(&self.store_dir);
+            for d in [&overlay.upper, &overlay.work] {
+                std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+            }
+            DeployManifest::default()
+        } else {
+            self.deployer.deploy(&sources, &target)?
+        };
         self.state.deployed = Some(manifest);
 
         // Activate Creation Engine plugins so the game actually loads them.

@@ -23,6 +23,11 @@ pub enum LinkMethod {
     /// Hard links — appear as real files (better compat with some loaders),
     /// but require the mod store and game dir to share a filesystem.
     Hardlink,
+    /// Virtual filesystem via a bubblewrap overlay launch wrapper: nothing is
+    /// written into the game dir at all. Deploy only records load order and
+    /// produces a `bwrap … %command%` string for the game's launch options.
+    /// Needs `bubblewrap` with overlay support; game-dir deploy targets only.
+    Overlay,
 }
 
 /// Records what a deploy created so it can be cleanly reverted.
@@ -159,6 +164,8 @@ fn make_link(method: LinkMethod, src: &Path, dst: &Path) -> Result<()> {
     match method {
         LinkMethod::Symlink => symlink(src, dst),
         LinkMethod::Hardlink => std::fs::hard_link(src, dst).map_err(|e| Error::io(dst, e)),
+        // Overlay deploys never link files; Manager bypasses the LinkDeployer.
+        LinkMethod::Overlay => Err(Error::other("overlay method does not create links")),
     }
 }
 

@@ -247,6 +247,66 @@ fn paradox_writes_dlc_load() {
 }
 
 #[test]
+fn overlay_method_deploys_without_touching_game_dir() {
+    use modeman_core::deploy::LinkMethod;
+
+    let data_root = tmp("data-ov");
+    let lib = tmp("lib-ov");
+    let mod_src = tmp("modsrc-ov");
+
+    let game_dir = lib.join("steamapps/common/SkyrimSE");
+    fs::create_dir_all(game_dir.join("Data")).unwrap();
+    let appdata = lib.join(
+        "steamapps/compatdata/489830/pfx/drive_c/users/steamuser/AppData/Local/Skyrim Special Edition",
+    );
+    fs::create_dir_all(&appdata).unwrap();
+    fs::write(appdata.join("plugins.txt"), "*Skyrim.esm\n").unwrap();
+
+    fs::create_dir_all(mod_src.join("Textures")).unwrap();
+    fs::write(mod_src.join("Textures/wall.dds"), b"pixels").unwrap();
+    fs::write(mod_src.join("CoolMod.esp"), b"TES4").unwrap();
+    let archive = tmp("arc-ov").join("coolmod.tar");
+    make_tar(&mod_src, &archive);
+
+    let installed = game::from_manual_path("skyrimse", game_dir.clone()).unwrap();
+    let mut mgr = Manager::open(data_root, installed).unwrap();
+    let _ = mgr.install_archive(&archive).unwrap();
+    mgr.set_deploy_method(LinkMethod::Overlay).unwrap();
+    mgr.deploy().unwrap();
+
+    // Game dir stays pristine — the overlay mounts at launch instead.
+    assert!(mgr.is_deployed());
+    assert!(!game_dir.join("Data/Textures").exists(), "no files linked");
+    assert!(!game_dir.join("Data/CoolMod.esp").exists());
+
+    // Load order is still activated, and the wrapper is available.
+    let txt = fs::read_to_string(appdata.join("plugins.txt")).unwrap();
+    assert!(txt.contains("*CoolMod.esp"), "plugin still activated");
+    let opt = mgr
+        .vfs_launch_option()
+        .expect("launch option for game-dir target");
+    assert!(opt.starts_with("bwrap ") && opt.ends_with("%command%"));
+
+    mgr.clear().unwrap();
+    let txt = fs::read_to_string(appdata.join("plugins.txt")).unwrap();
+    assert!(!txt.contains("CoolMod.esp"), "plugin deactivated on clear");
+}
+
+#[test]
+fn overlay_method_rejected_for_prefix_docs_games() {
+    use modeman_core::deploy::LinkMethod;
+
+    let data_root = tmp("data-ovck");
+    let lib = tmp("lib-ovck");
+    let game_dir = lib.join("steamapps/common/CK3");
+    fs::create_dir_all(&game_dir).unwrap();
+
+    let installed = game::from_manual_path("ck3", game_dir).unwrap();
+    let mut mgr = Manager::open(data_root, installed).unwrap();
+    assert!(mgr.set_deploy_method(LinkMethod::Overlay).is_err());
+}
+
+#[test]
 fn remove_while_deployed_leaves_no_dangling_links() {
     let data_root = tmp("data-rm");
     let lib = tmp("lib-rm");

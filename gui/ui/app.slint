@@ -59,6 +59,7 @@ export component MainWindow inherits Window {
     in property <string> game-path;
     in property <bool> deployed;
     in property <int> deploy-method;
+    in property <string> launch-option;
     in property <string> api-key;
     in property <string> nexus-status: "Not signed in.";
 
@@ -213,9 +214,9 @@ export component MainWindow inherits Window {
                 Rectangle { horizontal-stretch: 1; }
                 Text { text: "Link:"; vertical-alignment: center; color: #999; }
                 ComboBox {
-                    model: ["symlink", "hardlink"];
+                    model: ["symlink", "hardlink", "overlay (bwrap)"];
                     current-index: deploy-method;
-                    min-width: 110px;
+                    min-width: 140px;
                     selected(v) => { root.set-deploy-method(self.current-index); }
                 }
                 Text {
@@ -225,6 +226,16 @@ export component MainWindow inherits Window {
                 }
                 Button { text: "Clear"; enabled: deployed; clicked => { root.clear-deploy(); } }
                 Button { text: "Deploy"; primary: true; clicked => { root.deploy(); } }
+            }
+
+            if launch-option != "" : HorizontalBox {
+                spacing: 8px;
+                Text { text: "Launch options:"; vertical-alignment: center; color: #999; }
+                LineEdit {
+                    text: launch-option;
+                    read-only: true;
+                    horizontal-stretch: 1;
+                }
             }
 
             GroupBox {

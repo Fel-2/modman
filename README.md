@@ -7,12 +7,16 @@ Cyberpunk 2077. Designed around Proton/Steam realities on Linux.
 
 ## Status
 
-- [x] Steam game detection (parses `libraryfolders.vdf` + `appmanifest_*.acf`)
+- [x] Game detection: Steam (`libraryfolders.vdf` + `appmanifest_*.acf`),
+      Heroic (GOG / Epic / sideloaded), Lutris (`pga.db`) — non-Steam installs
+      carry their Wine prefix so load-order files resolve correctly
 - [x] Mod install from archive (zip / 7z / rar / tar via libarchive)
 - [x] Per-game mod store outside the game install
 - [x] Profiles with ordered, toggleable load order
-- [x] Deployment into the game dir — symlink **or** hardlink, revertable via
-      manifest; overwritten vanilla files are backed up and restored on clear
+- [x] Deployment into the game dir — symlink, hardlink, **or** overlay
+      (bubblewrap VFS: nothing written to the game dir, mods mount at launch);
+      revertable via manifest; overwritten vanilla files are backed up and
+      restored on clear
 - [x] Creation Engine plugin activation — writes `plugins.txt` in the Proton
       prefix, preserving base/DLC masters
 - [x] Nexus Mods integration — API-key login, `nxm://` link download + install,
@@ -172,9 +176,12 @@ The `platform` crate holds one `ModPlatform` trait with a provider each.
 - [x] Keyword search — Nexus v2 GraphQL + per-platform search, one search box
 - [x] In-place updates, master-aware plugin sorting, deploy-safe remove/update
 - [x] Manual game registration ("Add game…", persisted)
+- [x] Overlay/VFS deploy method — bwrap overlay launch wrapper, game dir
+      untouched; pick "overlay (bwrap)" and paste the generated launch options
+- [x] GOG / Heroic / Lutris auto-detection — Heroic (GOG, Epic, sideloaded)
+      and Lutris installs detected with their Wine prefixes, so `plugins.txt`
+      etc. land in the right place (GOG-suffixed appdata handled)
 - [ ] More games / engines as needed
-- [ ] Overlayfs/VFS deploy backend (game dir untouched)
-- [ ] GOG / Heroic / Lutris auto-detection
 - [ ] Packaging: AppImage / Flatpak / AUR
 
 ## License

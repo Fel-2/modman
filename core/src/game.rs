@@ -303,6 +303,10 @@ pub struct InstalledGame {
     pub spec: &'static GameSpec,
     /// Absolute path to the game install directory.
     pub path: PathBuf,
+    /// Wine/Proton prefix root (the directory holding `drive_c`), for installs
+    /// not managed by Steam (Heroic, Lutris). `None` = derive the prefix from
+    /// the Steam library layout (`steamapps/compatdata/<appid>/pfx`).
+    pub prefix: Option<PathBuf>,
 }
 
 impl InstalledGame {
@@ -343,31 +347,62 @@ impl InstalledGame {
         Some(if sub.is_empty() { base } else { base.join(sub) })
     }
 
-    /// A directory under the prefix's `steamuser` home.
-    fn prefix_user_dir(&self, rel: &str) -> Option<PathBuf> {
+    /// The prefix root holding `drive_c`: the explicit override (Heroic /
+    /// Lutris installs) or the Steam `compatdata/<appid>/pfx` layout.
+    fn prefix_root(&self) -> Option<PathBuf> {
+        if let Some(p) = &self.prefix {
+            return Some(p.clone());
+        }
         let steamapps = self.steamapps_dir()?;
         Some(
             steamapps
                 .join("compatdata")
                 .join(self.spec.steam_appid.to_string())
-                .join("pfx/drive_c/users/steamuser")
-                .join(rel),
+                .join("pfx"),
         )
     }
 
-    /// Path to `AppData/Local/<appdata>` inside the game's Proton prefix.
+    /// A directory under the prefix's user home. Proton uses `steamuser`;
+    /// plain Wine (Heroic/Lutris runners) uses the real username — prefer
+    /// whichever exists, defaulting to `steamuser`.
+    fn prefix_user_dir(&self, rel: &str) -> Option<PathBuf> {
+        let users = self.prefix_root()?.join("drive_c/users");
+        let steamuser = users.join("steamuser");
+        let home = if steamuser.is_dir() {
+            steamuser
+        } else {
+            std::env::var("USER")
+                .ok()
+                .map(|u| users.join(u))
+                .filter(|p| p.is_dir())
+                .unwrap_or(steamuser)
+        };
+        Some(home.join(rel))
+    }
+
+    /// Path to `AppData/Local/<appdata>` inside the game's Wine/Proton prefix.
     /// `None` if the game has no plugin appdata or the prefix can't be located.
+    /// GOG builds use a suffixed folder (e.g. "Fallout4 GOG") — prefer an
+    /// existing variant over the base name.
     pub fn prefix_appdata(&self) -> Option<PathBuf> {
         if self.spec.appdata.is_empty() {
             return None;
         }
-        let steamapps = self.steamapps_dir()?;
-        let dir = steamapps
-            .join("compatdata")
-            .join(self.spec.steam_appid.to_string())
-            .join("pfx/drive_c/users/steamuser/AppData/Local")
-            .join(self.spec.appdata);
-        Some(dir)
+        let local = self.prefix_user_dir("AppData/Local")?;
+        let base = local.join(self.spec.appdata);
+        if !base.is_dir() {
+            for variant in [
+                format!("{} GOG", self.spec.appdata),
+                format!("{} EPIC", self.spec.appdata),
+                format!("{} MS", self.spec.appdata),
+            ] {
+                let p = local.join(&variant);
+                if p.is_dir() {
+                    return Some(p);
+                }
+            }
+        }
+        Some(base)
     }
 }
 
@@ -455,6 +490,7 @@ fn scan_library(lib: &Path, out: &mut Vec<InstalledGame>) {
                 out.push(InstalledGame {
                     spec,
                     path: install,
+                    prefix: None,
                 });
             }
         }
@@ -482,7 +518,11 @@ pub fn from_manual_path(id: &str, path: PathBuf) -> Result<InstalledGame> {
             path.display()
         )));
     }
-    Ok(InstalledGame { spec, path })
+    Ok(InstalledGame {
+        spec,
+        path,
+        prefix: None,
+    })
 }
 
 // ---- manually registered installs (non-Steam / undetected) ----------------

@@ -9,6 +9,7 @@ pub mod deploy;
 pub mod error;
 pub mod fomod;
 pub mod game;
+pub mod launchers;
 pub mod loadorder;
 pub mod manager;
 pub mod paradoxdb;

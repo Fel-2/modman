@@ -294,8 +294,11 @@ impl App {
     /// Detect installed games; open the first (or keep current if still present).
     fn rescan(&mut self) {
         self.games = game::detect_all();
-        // Merge manually-registered installs (non-Steam / undetected).
-        for g in game::manual_games(&self.data_root) {
+        // Merge Heroic/Lutris detections and manually-registered installs.
+        for g in modeman_core::launchers::detect_all()
+            .into_iter()
+            .chain(game::manual_games(&self.data_root))
+        {
             if self.games.iter().all(|d| d.path != g.path) {
                 self.games.push(g);
             }
@@ -303,7 +306,7 @@ impl App {
         if self.games.is_empty() {
             self.current = None;
             self.manager = None;
-            self.status = "No supported games detected (Steam libraries scanned).".into();
+            self.status = "No supported games detected (Steam, Heroic, and Lutris scanned).".into();
             return;
         }
         let idx = self.current.filter(|&i| i < self.games.len()).unwrap_or(0);
@@ -659,12 +662,22 @@ fn refresh(ui: &MainWindow, app: &App) {
         ui.set_deploy_method(match mgr.deploy_method() {
             LinkMethod::Symlink => 0,
             LinkMethod::Hardlink => 1,
+            LinkMethod::Overlay => 2,
         });
+        // Overlay method: surface the bwrap wrapper to paste into Steam's
+        // launch options (that's what actually mounts the mods).
+        let launch = if mgr.deploy_method() == LinkMethod::Overlay {
+            mgr.vfs_launch_option().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        ui.set_launch_option(launch.as_str().into());
     } else {
         ui.set_game_path("—".into());
         ui.set_profiles(ModelRc::new(VecModel::<SharedString>::default()));
         ui.set_mods(ModelRc::new(VecModel::<ModRow>::default()));
         ui.set_deployed(false);
+        ui.set_launch_option("".into());
     }
 }
 
@@ -1421,18 +1434,21 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     on!(on_set_deploy_method, |a, idx: i32| {
-        let method = if idx == 1 {
-            LinkMethod::Hardlink
-        } else {
-            LinkMethod::Symlink
+        let (method, name) = match idx {
+            1 => (LinkMethod::Hardlink, "hardlink"),
+            2 => (LinkMethod::Overlay, "overlay (bwrap)"),
+            _ => (LinkMethod::Symlink, "symlink"),
         };
         if let Some(mgr) = a.manager.as_mut() {
             match mgr.set_deploy_method(method) {
                 Ok(_) => {
-                    a.status = format!(
-                        "Deploy method: {}",
-                        if idx == 1 { "hardlink" } else { "symlink" }
-                    )
+                    a.status = if method == LinkMethod::Overlay {
+                        "Deploy method: overlay — deploy, then paste the launch \
+                         options line into Steam (game → Properties)."
+                            .into()
+                    } else {
+                        format!("Deploy method: {name}")
+                    }
                 }
                 Err(e) => a.status = format!("Could not change method: {e}"),
             }
