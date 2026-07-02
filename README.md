@@ -150,18 +150,6 @@ doesn't overlap the built-in games.
 
 The `platform` crate holds one `ModPlatform` trait with a provider each.
 
-## Experimental (real-machine only)
-
-These ship but can't be validated headless — try them on a real install:
-
-- **VFS launch wrapper** — `Manager::vfs_launch_option()` returns a
-  `bwrap --overlay … -- %command%` string. Paste it into the game's Steam
-  launch options; mods are overlaid over the game dir only while it runs, so the
-  install stays pristine. Needs `bubblewrap` with overlay support.
-- **Cyberpunk REDmod** — `Manager::redmod_deploy()` runs the bundled
-  `redMod.exe deploy` through a detected Proton runtime to compile `mods/` into
-  `archive/pc/mod/`. Legacy `archive/pc/mod` mods already work via plain deploy.
-
 ## Roadmap
 
 - [x] Local management (detect, install, profiles, deploy)
